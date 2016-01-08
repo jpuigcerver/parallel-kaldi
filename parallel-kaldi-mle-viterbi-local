@@ -31,7 +31,7 @@ update_flags=mvwt;
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-mle-local [options] fst1_rspec fea1_rspec
+Usage: parallel-kaldi-mle-viterbi-local [options] fst1_rspec fea1_rspec
                                         [fst2_rspec fea2_rspec ...]
                                         old_mdl work_dir
 
@@ -39,7 +39,7 @@ Description:
    Perform Maximum Likelihood Estimation of GMM-based acoustic model using
    the statistics from a Viterbi forced alignment.
 
-   e.g: parallel-kaldi-viterbi-mle-local ark:train.fst.1 ark:train.fea.1 \\
+   e.g: parallel-kaldi-mle-viterbi-local ark:train.fst.1 ark:train.fea.1 \\
         ark:train.fst.2 ark:train.fea.2 old_mdl output_dir
 
 Options:
