@@ -117,6 +117,7 @@ make_dirs "$wdir";
 
 # Perform --mle_iterations iterations of the MLE with Viterbi alignment.
 for k in $(seq 1 $mle_iterations); do
+    msg "--- Viterbi MLE iteration $k (of $mle_iterations)";
     parallel-kaldi-viterbi-mle-iter-local \
 	--align_equal $(if [ $i = 1 -a $k = 1 ]; then \
    	echo $align_equal; else echo false; fi) \

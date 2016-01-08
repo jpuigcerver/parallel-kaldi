@@ -170,6 +170,7 @@ final_gaussian="${num_gaussian[${#num_gaussian[@]} - 1]}";
 
 for i in $(seq 1 ${#num_gaussian[@]}); do
     cg=${num_gaussian[i-1]};
+    msg "+++ Training with $cg (of $final_gaussian) gaussian mixtures";
     parallel-kaldi-viterbi-mle-local \
 	--align_equal "$align_equal" --acoustic_scale "$acoustic_scale" \
 	--beam "$beam" --careful "$careful" --clean "$clean" \
