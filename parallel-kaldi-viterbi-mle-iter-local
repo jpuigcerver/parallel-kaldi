@@ -11,14 +11,13 @@ SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 
 # Options for gmm-align-compiled
 acoustic_scale=1.0;
-align_equal=false;  # alignment with aling-equal-compiled
+align_equal=false;
 beam=1000;
 careful=false;
 retry_beam=0;
 self_loop_scale=1.0;
 transition_scale=1.0;
 # Options for gmm-est
-min_count=20;
 min_gaussian_occupancy=10;
 min_gaussian_weight=1e-05;
 min_variance=0.001;
@@ -31,16 +30,17 @@ update_flags=mvwt;
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-mle-viterbi-local [options] fst1_rspec fea1_rspec
-                                        [fst2_rspec fea2_rspec ...]
-                                        old_mdl work_dir
+Usage: parallel-kaldi-mle-viterbi-iter-local [options] fst1_rspec fea1_rspec
+                                             [fst2_rspec fea2_rspec ...]
+                                             old_mdl work_dir
 
 Description:
    Perform Maximum Likelihood Estimation of GMM-based acoustic model using
    the statistics from a Viterbi forced alignment.
 
-   e.g: parallel-kaldi-mle-viterbi-local ark:train.fst.1 ark:train.fea.1 \\
-        ark:train.fst.2 ark:train.fea.2 old_mdl output_dir
+   e.g: parallel-kaldi-mle-viterbi-iter-local \\
+        ark:train.fst.1 ark:train.fea.1 ark:train.fst.2 ark:train.fea.2 \\
+        old_mdl output_dir
 
 Options:
   --acoustic_scale             : (float, default = $acoustic_scale)
@@ -61,9 +61,6 @@ Options:
   --config                     : (string, default = \"\")
                                  Read options from this config file. Multiple
                                  config files can be specified.
-  --min_count                  : (float, default = $min_count)
-                                 Minimum per-Gaussian count enforced while
-                                 mixing up and down.
   --min_gaussian_occupancy     : (float, default = $min_gaussian_occupancy)
                                  Minimum occupancy to update a Gaussian.
   --min_gaussian_weight        : (float, default = $min_gaussian_weight)
@@ -82,7 +79,7 @@ Options:
                                  probs (relative to acoustics).
   --share_for_pdfs             : (boolean, default = $share_for_pdfs)
                                  If true, share all transition parameters where
-                                 the states have the same pdf.
+                                 the states have the same p.d.f.
   --transition_floor           : (float, default = $transition_floor)
                                  Floor for transition probabilities.
   --transition_min_count       : (float, default = $transition_min_count)
@@ -96,7 +93,7 @@ Options:
 ";
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
-[ $# -eq 0 ] && echo "$help_usage" >&2 && exit 1;
+[ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
 
 fsts=();
 feas=();
@@ -119,8 +116,6 @@ make_dirs "$wdir";
     error "--acoustic_scale must be greater than or equal to 0.0!";
 [ "$(echo "$beam > 0.0" | bc -l)" = 1 ] || \
     error "--beam must be greater than 0.0!";
-[ "$(echo "$min_count >= 0.0" | bc -l)" = 1 ] || \
-    error "--min_count must be greater than or equal to 0.0!";
 [ "$(echo "$min_gaussian_occupancy >= 0.0" | bc -l)" = 1 ] || \
     error "--min_gaussian_occupancy must be greater than or equal to 0.0!";
 [ "$(echo "$min_gaussian_weight > 0.0" | bc -l)" = 1 ] || \
@@ -185,8 +180,7 @@ done;
 # Perform MLE of the parameters from the statistics computed before and write
 # a new model to $wdir/mdl.
 [ -s "${wdir}/mdl" -a -s "${wdir}/occ" -a "${overwrite}" = false ] || \
-    gmm-est --min-count=$min_count \
-    --min-gaussian-occupancy=$min_gaussian_occupancy \
+    gmm-est --min-gaussian-occupancy=$min_gaussian_occupancy \
     --min-gaussian-weight=$min_gaussian_weight \
     --min-variance=$min_variance \
     --remove-low-count-gaussians=$remove_low_count_gaussians \

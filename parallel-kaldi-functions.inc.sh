@@ -30,6 +30,11 @@ function warning {
     echo "$(date "+%F %T") WARNING: $@" >&2;
 }
 
+### This function shows a info message.
+function msg {
+    echo "$(date "+%F %T") INFO: $@" >&2;
+}
+
 ### This function normalizes a floating point number.
 ### Examples:
 ### $ normalize_float 3
@@ -40,6 +45,24 @@ function normalize_float () {
     [ $# -ne 1 ] && echo "Usage: normalize_float <f>" >&2 && return 1;
     LC_NUMERIC=C printf "%.8g" "$1" | awk '{
     if(!match($0, /.+\..+/)) printf("%.1f\n", $0); else print $0; }';
+    return 0;
+}
+
+function ceil_div () {
+    [ $# -ne 2 ] && echo "Usage: py_ceil <num> <den>" >&2 && return 1;
+    LC_NUMERIC=C python -c "
+from math import ceil
+print int(ceil($1 / $2))
+"
+    return 0;
+}
+
+function ceil_mul () {
+    [ $# -ne 2 ] && echo "Usage: py_ceil <fact1> <fact2>" >&2 && return 1;
+    LC_NUMERIC=C python -c "
+from math import ceil
+print int(ceil($1 * $2))
+"
     return 0;
 }
 

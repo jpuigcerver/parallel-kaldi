@@ -1,0 +1,205 @@
+#!/bin/bash
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
+### Load useful functions.
+. "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
+    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
+    && exit 1);
+
+# Options for gmm-align-compiled
+acoustic_scale=1.0;
+align_equal=true;
+beam=1000;
+careful=false;
+retry_beam=0;
+self_loop_scale=1.0;
+transition_scale=1.0;
+# Options for gmm-est
+min_gaussian_occupancy=10;
+min_gaussian_weight=1e-05;
+min_variance=0.001;
+remove_low_count_gaussians=true;
+share_for_pdfs=false;
+transition_floor=0.01;
+transition_min_count=5;
+update_flags=mvwt;
+# MLE iterations
+mle_iterations=10;
+num_gaussian_target=128;
+num_gaussian_scale=2;
+# Options for gmm-mixup
+min_count=20;
+perturb_factor=0.01;
+power=0.2;
+# Generic options
+overwrite=false;
+clean=false;
+help_message="
+Usage: parallel-kaldi-viterbi-train-local [options] fst1_rspec fea1_rspec
+                                          [fst2_rspec fea2_rspec ...]
+                                          init_mdl work_dir
+
+Description:
+   Perform traditional training of a GMM-based acoustic model using the
+   statistics from a Viterbi forced alignment. The training starts typically
+   with 1 (or a few number of) gaussian mixture(s) and increases this number
+   after a few iterations of Viterbi MLE training.
+
+   e.g: parallel-kaldi-viterbi-train-local ark:train.fst.1 ark:train.fea.1 \\
+        ark:train.fst.2 ark:train.fea.2 init_mdl output_dir
+
+Options:
+  --acoustic_scale             : (float, default = $acoustic_scale)
+                                 Scaling factor for acoustic likelihoods.
+  --align_equal                : (boolean, default = $align_equal)
+                                 Perform equal alignment instead of Viterbi
+                                 alignment in the first iteration. This is
+                                 useful when the initial model was not
+                                 initialized before.
+  --beam                       : (float, default = $beam)
+                                 Decoding beam used in alignment.
+  --careful                    : (boolean, default = $careful)
+                                 If true, do 'careful' alignment, which is
+                                 better at detecting alignment failure
+                                 (involves loop to start of decoding graph).
+  --clean                      : (boolean, default = $clean)
+                                 Clean temporal accumulated statistics files
+                                 after the MLE.
+  --config                     : (string, default = \"\")
+                                 Read options from this config file. Multiple
+                                 config files can be specified.
+  --min_count                  : (float, default = $min_count)
+                                 Minimum per-Gaussian count enforced while
+                                 mixing up.
+  --min_gaussian_occupancy     : (float, default = $min_gaussian_occupancy)
+                                 Minimum occupancy to update a Gaussian.
+  --min_gaussian_weight        : (float, default = $min_gaussian_weight)
+                                 Minimum Gaussian weight before we remove it.
+  --min_variance               : (float, default = $min_variance)
+                                 Variance floor (absolute variance).
+  --mle_iterations             : (integer, default = $mle_iterations)
+                                 Number of Viterbi MLE iterations for each
+                                 number of gaussian mixtures.
+  --num_gaussian_target        : (integer, default = $num_gaussian_target)
+                                 Train this number of gaussian mixtures in
+                                 each p.d.f. This is an average, since each
+                                 p.d.f. can have a different number of mixtures.
+  --num_gaussian_scale         : (float, default = $num_gaussian_scale)
+                                 Increase the number of gaussian mixtures by
+                                 this scale factor.
+  --overwrite                  : (boolean, default = $overwrite)
+                                 If true, overwrite previously created files.
+  --perturb_factor             : (float, default = $perturb_factor)
+                                 Perturb means by standard deviation times this
+                                 factor.
+  --power                      : (float, default = $power)
+                                 Power to allocate Gaussians to states while
+                                 mixing up.
+  --remove_low_count_gaussians : (boolean, default = $remove_low_count_gaussians)
+                                 If true, remove Gaussians that fall below the
+                                 floors.
+  --retry_beam                 : (float, default = $retry_beam)
+                                 Decoding beam for second try at alignment.
+  --self_loop_scale            : (float, default = $self_loop_scale)
+                                 Scale of self-loop versus non-self-loop log
+                                 probs (relative to acoustics).
+  --share_for_pdfs             : (boolean, default = $share_for_pdfs)
+                                 If true, share all transition parameters where
+                                 the states have the same p.d.f.
+  --transition_floor           : (float, default = $transition_floor)
+                                 Floor for transition probabilities.
+  --transition_min_count       : (float, default = $transition_min_count)
+                                 Minimum count required to update transitions
+                                 from a state.
+  --transition_scale           : (float, default = $transition_scale)
+                                 Transition-probability scale (relative to
+                                 acoustics).
+  --update_flags               : (string, default = \"$update_flags\")
+                                 Which GMM parameters to update: subset of mvwt.
+";
+. "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
+    error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
+[ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
+
+fsts_and_feas=();
+while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
+[ $# -ne 2 ] && error "Wrong number of arguments. Check the usage with --help";
+[ ${#fsts_and_feas[@]} -lt 2 ] && \
+    error "You must specify at least one training FST and feature file";
+old_mdl="$1";
+wdir="$2";
+
+check_execs bc parallel-kaldi-viterbi-mle-local gmm-info gmm-mixup;
+check_files "$old_mdl";
+make_dirs "$wdir";
+
+# Check option values
+[ "$(echo "$min_count >= 0.0" | bc -l)" = 1 ] || \
+    error "--min_count must be greater than or equal to 0.0!";
+[ "$num_gaussian_target" -gt 0 ] || \
+    error "--num_gaussian_target must be an integer greater than 0!";
+[ "$(echo "$num_gaussian_scale > 1.0" | bc -l)" = 1 ] || \
+    error "--num_gaussian_scale must be greater than 1.0!";
+[ "$(echo "$perturb_factor > 0.0" | bc -l)" = 1 ] || \
+    error "--perturb_factor must be greater than 0.0!";
+[ "$(echo "$power > 0.0" | bc -l)" = 1 ] || \
+    error "--power must be greater than 0.0!";
+
+# Number of p.d.f. in the initial model
+total_pdfs="$(gmm-info "$old_mdl" | grep "number of pdfs" | awk '{print $NF}')";
+# Total number of gaussian mixtures in the initial model.
+total_gauss="$(gmm-info "$old_mdl" | grep "number of gaussians" | \
+    awk '{print $NF}')";
+# Initial number of mixtures for each p.d.f. (on average)
+cg="$(ceil_div $total_gauss $total_pdfs)";
+# Array num_gaussian contains the number of gaussian mixtures to train in
+# each iteration.
+num_gaussian=($avg_gauss_init);
+while [ $cg -lt $num_gaussian_target ]; do
+    cg=$(ceil_mul $num_gaussian_scale $cg);
+    num_gaussian+=($cg);
+done;
+final_gaussian="${num_gaussian[${#num_gaussian[@]} - 1]}";
+# The final (average) number of gaussian mixtures in each p.d.f. may be
+# different from the specified target. Inform the user in that case.
+[ "$final_gaussian" -ne "$num_gaussian_target" ] && \
+    warning "The final number of mixtures in each p.d.f. is $final_gaussian";
+
+for i in $(seq 1 ${#num_gaussian[@]}); do
+    cg=${num_gaussian[i-1]};
+    parallel-kaldi-viterbi-mle-local \
+	--align_equal "$align_equal" --acoustic_scale "$acoustic_scale" \
+	--beam "$beam" --careful "$careful" --clean "$clean" \
+	--min_gaussian_occupancy "$min_gaussian_occupancy" \
+	--min_gaussian_weight "$min_gaussian_weight" \
+	--min_variance "$min_variance" --overwrite "$overwrite" \
+	--remove_low_count_gaussians "$remove_low_count_gaussians" \
+	--retry_beam "$retry_beam" --self_loop_scale "$self_loop_scale" \
+	--share_for_pdfs "$share_for_pdfs" \
+	--transition_floor "$transition_floor" \
+	--transition_min_count "$transition_min_count" \
+	--transition_scale "$transition_scale" \
+	--update_flags "$update_flags" ${fsts_and_feas[@]} \
+	"$old_mdl" "${wdir}/gmm_${cg}" || exit 1;
+    # Point old_mdl to the newest model and old_occ to the p.d.f. occupancies.
+    old_mdl="${wdir}/gmm_${cg}/it_${k}/mdl";
+    old_occ="${wdir}/gmm_${cg}/it_${k}/occ";
+    # Increase number of mixtures.
+    if [ $i -lt ${#num_gaussian[@]} ]; then
+	mdl="${wdir}/gmm_${num_gaussian[i]}/it_0/mdl";
+	log="${wdir}/gmm_${num_gaussian[i]}/it_0/gmm-mixup.log";
+	make_dirs "${wdir}/gmm_${num_gaussian[i]}/it_0";
+	[ -s "$mdl" -a $overwrite = false ] || \
+	    gmm-mixup --min-count="$min_count" \
+	    --mix-up="$[${num_gaussian[i]} * $num_pdfs]" \
+	    --perturb-factor="$perturb_factor" --power="$power" \
+	    "$old_mdl" "$old_occ" "$mdl" &> "$log" || \
+	    error "GMM mixing up failed, see log file \"$log\"";
+	old_mdl="$mdl";
+    fi;
+done;
+
+exit 0;
