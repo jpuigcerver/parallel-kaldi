@@ -19,7 +19,7 @@ self_loop_scale=1.0;
 transition_scale=1.0;
 # Options for gmm-est
 min_gaussian_occupancy=10;
-min_gaussian_weight=1e-05;
+min_gaussian_weight=0.00001;
 min_variance=0.001;
 remove_low_count_gaussians=true;
 share_for_pdfs=false;
@@ -149,15 +149,16 @@ make_dirs "$wdir";
     error "--power must be greater than 0.0!";
 
 # Number of p.d.f. in the initial model
-total_pdfs="$(gmm-info "$old_mdl" | grep "number of pdfs" | awk '{print $NF}')";
+total_pdfs="$(gmm-info "$old_mdl" 2>/dev/null | \
+    grep "number of pdfs" | awk '{print $NF}')";
 # Total number of gaussian mixtures in the initial model.
-total_gauss="$(gmm-info "$old_mdl" | grep "number of gaussians" | \
-    awk '{print $NF}')";
+total_gauss="$(gmm-info "$old_mdl" 2> /dev/null | \
+    grep "number of gaussians" | awk '{print $NF}')";
 # Initial number of mixtures for each p.d.f. (on average)
-cg="$(ceil_div $total_gauss $total_pdfs)";
+cg="$[(total_gauss + total_pdfs - 1) / total_pdfs]";
 # Array num_gaussian contains the number of gaussian mixtures to train in
 # each iteration.
-num_gaussian=($avg_gauss_init);
+num_gaussian=($cg);
 while [ $cg -lt $num_gaussian_target ]; do
     cg=$(ceil_mul $num_gaussian_scale $cg);
     num_gaussian+=($cg);
@@ -183,7 +184,7 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	--transition_floor "$transition_floor" \
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
-	--update_flags "$update_flags" ${fsts_and_feas[@]} \
+	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
 	"$old_mdl" "${wdir}/gmm_${cg}" || exit 1;
     # Point old_mdl to the newest model and old_occ to the p.d.f. occupancies.
     old_mdl="${wdir}/gmm_${cg}/it_${k}/mdl";

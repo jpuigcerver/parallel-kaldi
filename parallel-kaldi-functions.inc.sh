@@ -15,24 +15,41 @@
 # See the Apache 2 License for the specific language governing permissions and
 # limitations under the License.
 
+function find_caller_not_library () {
+    local libdir="$(dirname ${BASH_SOURCE[0]})";
+    local f=1;
+    local cbase="$(basename "${BASH_SOURCE[f]}")";
+    while [ "$(dirname "${BASH_SOURCE[f]}")" = "$libdir" -a \
+	"${cbase:(-7)}" = ".inc.sh" ]; do
+	((f++));
+	cbase="$(basename "${BASH_SOURCE[f]}")";
+    done;
+    echo "$cbase:${FUNCNAME[f]}:${BASH_LINENO[f-1]}";
+    exit 1;
+}
+
 ### This function prints an error message and exits from the shell.
 function error () {
-    echo "$(date "+%F %T") ERROR: $@" >&2; exit 1;
+    local cinfo=( $(caller) );
+    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] ERROR: $@" >&2; exit 1;
 }
 
 ### This function prints an error message, but does not exit from shell.
 function error_continue () {
-    echo "$(date "+%F %T") ERROR: $@" >&2;
+    local cinfo=( $(caller) );
+    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] ERROR: $@" >&2;
 }
 
 ### This function shows a warning message.
 function warning {
-    echo "$(date "+%F %T") WARNING: $@" >&2;
+    local cinfo=( $(caller) );
+    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] WARNING: $@" >&2;
 }
 
 ### This function shows a info message.
 function msg {
-    echo "$(date "+%F %T") INFO: $@" >&2;
+    local cinfo=( $(caller) );
+    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] INFO: $@" >&2;
 }
 
 ### This function normalizes a floating point number.
@@ -72,6 +89,8 @@ print int(ceil($1 * $2))
 ### $ check_execs HERest cp
 ### $ check_execs HERest2 cp2
 ### ERROR: Executable "HERest2" is missing in your PATH!
+### $ check_execs HERest cp2
+### ERROR: Executable "cp2" is missing in your PATH!
 function check_execs () {
     while [ $# -gt 0 ]; do
 	which "$1" &> /dev/null || \

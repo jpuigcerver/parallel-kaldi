@@ -19,7 +19,7 @@ self_loop_scale=1.0;
 transition_scale=1.0;
 # Options for gmm-est
 min_gaussian_occupancy=10;
-min_gaussian_weight=1e-05;
+min_gaussian_weight=0.00001;
 min_variance=0.001;
 remove_low_count_gaussians=true;
 share_for_pdfs=false;
@@ -149,7 +149,7 @@ for i in $(seq 0 $[${#fsts[@]} - 1]); do
     accs+=("$acc");
     [ -s "$acc" -a $overwrite = false ] || {
 	if [ $align_equal = true ]; then
-	    ( align-equal-compiled "${fsts[i]}" "${feas[i]}" ark:- \
+	    ( align-equal-compiled "${fsts[i]}" "${feas[i]}" ark:- | \
 		gmm-acc-stats-ali "$old_mdl" "${feas[i]}" ark:- "$acc" ) \
 		&> "$log" &
 	    bg_jobs+=("$!");
@@ -188,7 +188,7 @@ done;
     --transition-floor=$transition_floor \
     --transition-min-count=$transition_min_count \
     --update-flags="$update_flags" --write-occs="${wdir}/occ" \
-    "$old_mdl" "gmm-sum-accs - ${accs[@]}|" "${wdir}/mdl" \
+    "$old_mdl" "gmm-sum-accs - $(echo "${accs[@]}")|" "${wdir}/mdl" \
     &> "${wdir}/gmm-est.log" || \
     error "Maximum Likelihood Estimation failed, see \"${wdir}/gmm-est.log\"";
 

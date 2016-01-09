@@ -19,7 +19,7 @@ self_loop_scale=1.0;
 transition_scale=1.0;
 # Options for gmm-est
 min_gaussian_occupancy=10;
-min_gaussian_weight=1e-05;
+min_gaussian_weight=0.00001;
 min_variance=0.001;
 remove_low_count_gaussians=true;
 share_for_pdfs=false;
@@ -119,8 +119,8 @@ make_dirs "$wdir";
 for k in $(seq 1 $mle_iterations); do
     msg "--- Viterbi MLE iteration $k (of $mle_iterations)";
     parallel-kaldi-viterbi-mle-iter-local \
-	--align_equal $(if [ $i = 1 -a $k = 1 ]; then \
-   	echo $align_equal; else echo false; fi) \
+	--align_equal \
+	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
 	--acoustic_scale "$acoustic_scale" \
 	--beam "$beam" --careful "$careful" --clean "$clean" \
 	--min_gaussian_occupancy "$min_gaussian_occupancy" \
@@ -134,7 +134,7 @@ for k in $(seq 1 $mle_iterations); do
 	--transition_floor "$transition_floor" \
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
-	--update_flags "$update_flags" ${fsts_and_feas[@]} \
+	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
 	"$old_mdl" "${wdir}/it_${k}" || exit 1;
     # Point old_mdl to the newest model.
     old_mdl="${wdir}/it_${k}/mdl";
