@@ -1,0 +1,182 @@
+#!/bin/bash
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
+### Load useful functions.
+. "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
+    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
+    && exit 1);
+
+# Options for gmm-latgen-faster-parallel
+acoustic_scale=0.1;
+allow_partial=false;
+beam=1000;
+beam_delta=0.5;
+delta=0.000976562;
+determinize_lattice=true;
+hash_ratio=2;
+lattice_beam=10;
+log_sum_exp_prune=0;
+max_active=2147483647;
+max_mem=50000000;
+min_active=200;
+minimize=false;
+num_threads=1;
+phone_determinize=true;
+prune_interval=25;
+word_determinize=true;
+word_symbol_table="";
+write_best_words=false;
+write_best_align=false;
+# Generic options
+overwrite=false;
+help_message="
+Usage: parallel-kaldi-latgen-local [options] mdl fst fea1_rspec [fea2_rspec ...]
+                                   work_dir
+
+Description:
+   Decode features using a GMM-based model and producing lattices and,
+   optionally, the 1-best word decoding and alignment.
+
+   e.g: parallel-kaldi-latgen-local mdl hclg.fst ark:test.fea wdir
+
+Options:
+  --acoustic_scale             : (float, default = $acoustic_scale)
+                                 Scaling factor for acoustic likelihoods.
+  --allow_partial              : (boolean, default = $allow_partial)
+                                 If true, produce output even if end state was
+                                 not reached.
+  --beam                       : (float, default = $beam)
+                                 Decoding beam.
+  --beam_delta                 : (float, default = $beam_delta)
+                                 Increment used in decoding. Larger is more
+                                 accurate (this parameter is obscure and relates
+                                 to a speedup in the way the max-active
+                                 constraint is applied).
+  --config                     : (string, default = \"\")
+                                 Read options from this config file. Multiple
+                                 config files can be specified.
+  --delta                      : (float, default = $delta)
+                                 Tolerance used in determinization.
+  --determinize_lattice        : (boolean, default = $determinize_lattice)
+                                 If true, determinize the lattice (in a special
+                                 sense, keeping only best pdf-sequence for each
+                                 word-sequence).
+  --hash_ratio                 : (float, default = $hash_ratio)
+                                 Setting used in decoder to control hash
+                                 behavior.
+  --lattice_beam               : (float, default = $lattice_beam)
+                                 Lattice generation beam.
+  --log_sum_exp_prune          : (float, default = $log_sum_exp_prune)
+                                 If >0, pruning parameter to minimize exp()'s.
+                                 Suggest 3 to 5; larger is more exact.
+  --max_active                 : (integer, default = $max_active)
+                                 Decoder maximum number of active states.
+  --max_mem                    : (integer, default = $max_mem)
+                                 Maximum approximate memory usage in
+                                 determinization (real usage might be many times
+                                 this).
+  --min_active                 : (integer, default = $min_active)
+                                 Decoder minimum number of active states.
+  --minimize                   : (boolean, default = $minimize)
+                                 If true, push and minimize after
+                                 determinization.
+  --num_threads                : (integer, default = $num_threads)
+                                 Number of actively processing threads to run
+                                 in parallel.
+  --overwrite                  : (boolean, default = $overwrite)
+                                 If true, overwrite previously created files.
+  --phone_determinize          : (boolean, default = $phone_determinize)
+                                 If true, do an initial pass of determinization
+                                 on both phones and words.
+  --prune_interval             : (integer, default = $prune_interval)
+                                 Interval (in frames) at which to prune tokens.
+  --word_determinize           : (boolean, default = $word_determinize)
+                                 If true, do a second pass of determinization on
+                                 words only (see also --phone_determinize).
+  --word_symbol_table          : (string, default = \"$word_symbol_table\")
+                                 Symbol table for words (for debug output).
+  --write_best_align           : (boolean, default = $write_best_align)
+                                 If true, writes an ARK file with the 1-best
+                                 alignment hypothesis in the output directory.
+  --write_best_words           : (boolean, default = $write_best_words)
+                                 If true, writes an ARK file with the 1-best
+                                 word sequence hypothesis in the output
+                                 directory.
+";
+. "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
+    error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
+[ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
+[ $# -lt 4 ] && error "Wrong number of arguments. Check the usage with --help";
+
+mdl="$1";
+fst="$2";
+shift 2;
+feas=();
+while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
+wdir="$1";
+
+check_execs bc gmm-latgen-faster-parallel
+check_files "$mdl" "$fst";
+make_dirs "$wdir";
+
+[ -z "$word_symbol_table" ] || check_files "$word_symbol_table";
+
+# Check option values
+[ "$(echo "$acoustic_scale >= 0.0" | bc -l)" = 1 ] || \
+    error "--acoustic_scale must be greater than or equal to 0.0!";
+[ "$(echo "$beam > 0.0" | bc -l)" = 1 ] || \
+    error "--beam must be greater than 0.0!";
+[ "$(echo "$beam_delta > 0.0" | bc -l)" = 1 ] || \
+    error "--beam_delta must be greater than 0.0!";
+[ "$(echo "$delta > 0.0" | bc -l)" = 1 ] || \
+    error "--delta must be greater than 0.0!";
+[ "$hash_ratio" -gt 1 ] || \
+    error "--hash_ratio must be a positive integer greater than 1!";
+[ "$(echo "$lattice_beam > 0.0" | bc -l)" = 1 ] || \
+    error "--lattice_beam must be greater than 0.0!";
+[ "$(echo "$log_sum_exp_prune >= 0.0" | bc -l)" = 1 ] || \
+    error "--log_sum_exp_prune must be greater than or equal to 0.0!";
+[ "$max_active" -gt 0 ] || \
+    error "--max_active must be a positive integer greater than 0!";
+[ "$min_active" -ge 0 ] || \
+    error "--min_active must be a positive integer greater than or equal to 0!";
+[ "$min_active" -le "$max_active" ] || \
+    error "--min_active must be lower than or equal to --max_active!";
+[ "$num_threads" -gt 0 ] || \
+    error "--num_threads must be a positive integer greater than 0!";
+[ "$prune_interval" -gt 0 ] || \
+    error "--prune_interval must be a positive integer greater than 0!";
+# If best alignment is requested, 1-best word hypothesis has to be written too.
+[ "$write_best_align" = true ] && write_best_words=true;
+
+# Process all input features sequentially, since each
+# gmm-latgen-faster-parallel already uses multiple threads...
+for i in $(seq 1 ${#feas[@]}); do
+    olattice="$wdir/lattice.$[i-1].ark";
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    [[ "$overwrite" = false && -s "$olattice" && \
+	( "$write_best_words" = false || -s "$owords" ) && \
+	( "$write_best_align" = false || -s "$oalign" ) ]] || \
+	gmm-latgen-faster-parallel \
+	--acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \
+	--beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \
+	--determinize-lattice="$determinize_lattice" \
+	--hash-ratio="$hash_ratio" --lattice-beam="$lattice_beam" \
+	--log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \
+	--max-mem="$max_mem" --min-active="$min_active" --minimize="$minimize" \
+	--num-threads="$num_threads" --num-threads-total="$[num_threads + 10]" \
+	--phone-determinize="$phone_determinize" \
+	--prune-interval="$prune_interval" \
+	--word-determinize="$word_determinize" \
+	--word-symbol-table="$word_symbol_table" \
+	"$mdl" "$fst" "${feas[i-1]}" "ark:$olattice" \
+	$([ "$write_best_words" = true ] && echo "ark:$owords") \
+	$([ "$write_best_align" = true ] && echo "ark:$oalign") \
+	&> "$wdir/gmm-latgen-faster-parallel.$[i-1].log";
+done;
+
+exit 0;

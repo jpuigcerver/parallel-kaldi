@@ -31,25 +31,25 @@ function find_caller_not_library () {
 ### This function prints an error message and exits from the shell.
 function error () {
     local cinfo=( $(caller) );
-    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] ERROR: $@" >&2; exit 1;
+    echo "$(date "+%F %T") [${cinfo[1]##*/}:${cinfo[0]}] ERROR: $@" >&2; exit 1;
 }
 
 ### This function prints an error message, but does not exit from shell.
 function error_continue () {
     local cinfo=( $(caller) );
-    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] ERROR: $@" >&2;
+    echo "$(date "+%F %T") [${cinfo[1]##*/}:${cinfo[0]}] ERROR: $@" >&2;
 }
 
 ### This function shows a warning message.
 function warning {
     local cinfo=( $(caller) );
-    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] WARNING: $@" >&2;
+    echo "$(date "+%F %T") [${cinfo[1]##*/}:${cinfo[0]}] WARNING: $@" >&2;
 }
 
 ### This function shows a info message.
 function msg {
     local cinfo=( $(caller) );
-    echo "$(date "+%F %T") [${cinfo[1]}:${cinfo[0]}] INFO: $@" >&2;
+    echo "$(date "+%F %T") [${cinfo[1]##*/}:${cinfo[0]}] INFO: $@" >&2;
 }
 
 ### This function normalizes a floating point number.
