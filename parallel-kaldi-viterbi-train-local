@@ -171,13 +171,16 @@ final_gaussian="${num_gaussian[${#num_gaussian[@]} - 1]}";
 
 for i in $(seq 1 ${#num_gaussian[@]}); do
     cg=${num_gaussian[i-1]};
+    # Perform equal alignment only for the first iteration.
+    [ $i -gt 1 ] && align_equal=false;
     msg "+++ Training with $cg (of $final_gaussian) gaussian mixtures";
     parallel-kaldi-viterbi-mle-local \
 	--align_equal "$align_equal" --acoustic_scale "$acoustic_scale" \
 	--beam "$beam" --careful "$careful" --clean "$clean" \
 	--min_gaussian_occupancy "$min_gaussian_occupancy" \
 	--min_gaussian_weight "$min_gaussian_weight" \
-	--min_variance "$min_variance" --overwrite "$overwrite" \
+	--min_variance "$min_variance" --mle_iterations "$mle_iterations" \
+	--overwrite "$overwrite" \
 	--remove_low_count_gaussians "$remove_low_count_gaussians" \
 	--retry_beam "$retry_beam" --self_loop_scale "$self_loop_scale" \
 	--share_for_pdfs "$share_for_pdfs" \
@@ -187,8 +190,8 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
 	"$old_mdl" "${wdir}/gmm_${cg}" || exit 1;
     # Point old_mdl to the newest model and old_occ to the p.d.f. occupancies.
-    old_mdl="${wdir}/gmm_${cg}/it_${k}/mdl";
-    old_occ="${wdir}/gmm_${cg}/it_${k}/occ";
+    old_mdl="${wdir}/gmm_${cg}/it_${mle_iterations}/mdl";
+    old_occ="${wdir}/gmm_${cg}/it_${mle_iterations}/occ";
     # Increase number of mixtures.
     if [ $i -lt ${#num_gaussian[@]} ]; then
 	mdl="${wdir}/gmm_${num_gaussian[i]}/it_0/mdl";
@@ -196,7 +199,7 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	make_dirs "${wdir}/gmm_${num_gaussian[i]}/it_0";
 	[ -s "$mdl" -a $overwrite = false ] || \
 	    gmm-mixup --min-count="$min_count" \
-	    --mix-up="$[${num_gaussian[i]} * $num_pdfs]" \
+	    --mix-up="$[${num_gaussian[i]} * $total_pdfs]" \
 	    --perturb-factor="$perturb_factor" --power="$power" \
 	    "$old_mdl" "$old_occ" "$mdl" &> "$log" || \
 	    error "GMM mixing up failed, see log file \"$log\"";
