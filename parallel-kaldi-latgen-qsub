@@ -87,7 +87,7 @@ Options:
                                  determinization.
   --num_threads                : (integer, default = $num_threads)
                                  Number of actively processing threads to run
-                                 in parallel.
+                                 in parallel inside each job.
   --overwrite                  : (boolean, default = $overwrite)
                                  If true, overwrite previously created files.
   --phone_determinize          : (boolean, default = $phone_determinize)
@@ -95,6 +95,9 @@ Options:
                                  on both phones and words.
   --prune_interval             : (integer, default = $prune_interval)
                                  Interval (in frames) at which to prune tokens.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd, -p mp, and -t are automatically set.
   --word_determinize           : (boolean, default = $word_determinize)
                                  If true, do a second pass of determinization on
                                  words only (see also --phone_determinize).
