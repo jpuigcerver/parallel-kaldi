@@ -125,8 +125,6 @@ feas=();
 while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
 wdir="$1";
 
-echo "${#feas[@]} ${feas[@]}" >&2;
-
 check_execs bc gmm-latgen-faster-parallel qsub;
 check_files "$mdl" "$fst";
 make_dirs "$wdir";
