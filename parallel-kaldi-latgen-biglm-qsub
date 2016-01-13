@@ -9,7 +9,7 @@ SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
     echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
     && exit 1);
 
-# Options for gmm-latgen-faster-parallel
+# Options for gmm-latgen-biglm-faster
 acoustic_scale=0.1;
 allow_partial=false;
 beam=1000;
@@ -23,26 +23,31 @@ max_active=2147483647;
 max_mem=50000000;
 min_active=200;
 minimize=false;
-num_threads=1;
 phone_determinize=true;
 prune_interval=25;
 word_determinize=true;
 word_symbol_table="";
 write_best_words=false;
 write_best_align=false;
+# QSub options
+qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 # Generic options
 overwrite=false;
 help_message="
-Usage: parallel-kaldi-latgen-local [options] mdl fst fea1 [fea2 ...] work_dir
+Usage: parallel-kaldi-latgen-biglm-local [options] mdl fst old_lm new_lm
+                                         fea1 [fea2 ...] work_dir
 
 Description:
-   Generate lattices from a GMM-based model and a decoding FST. Optionally,
-   the 1-best word decoding and alignment can also be obtained.
+   Generate lattices from a GMM-based model and a decoding FST, using a
+   separate big language model FST. Optionally, the 1-best word decoding
+   and alignment can also be obtained.
 
-   The input decoding FST and the features are interpreted as rxspecifiers
-   (see Kaldi documentation).
+   The input decoding FST, the old language model FST, the new language
+   model FST and the features are interpreted as rxspecifiers (see Kaldi
+   documentation).
 
-   e.g: parallel-kaldi-latgen-local mdl hclg.fst ark:test.fea wdir
+   e.g: parallel-kaldi-latgen-biglm-local mdl hclg.fst old_G.fst new_G.fst \\
+        ark:test.fea wdir
 
 Options:
   --acoustic_scale             : (float, default = $acoustic_scale)
@@ -85,9 +90,6 @@ Options:
   --minimize                   : (boolean, default = $minimize)
                                  If true, push and minimize after
                                  determinization.
-  --num_threads                : (integer, default = $num_threads)
-                                 Number of actively processing threads to run
-                                 in parallel.
   --overwrite                  : (boolean, default = $overwrite)
                                  If true, overwrite previously created files.
   --phone_determinize          : (boolean, default = $phone_determinize)
@@ -95,6 +97,9 @@ Options:
                                  on both phones and words.
   --prune_interval             : (integer, default = $prune_interval)
                                  Interval (in frames) at which to prune tokens.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd, -p mp, and -t are automatically set.
   --word_determinize           : (boolean, default = $word_determinize)
                                  If true, do a second pass of determinization on
                                  words only (see also --phone_determinize).
@@ -111,16 +116,18 @@ Options:
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
 [ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
-[ $# -lt 4 ] && error "Wrong number of arguments. Check the usage with --help";
+[ $# -lt 6 ] && error "Wrong number of arguments. Check the usage with --help";
 
 mdl="$1";
 fst="$2";
-shift 2;
+old_lm="$3";
+new_lm="$4";
+shift 4;
 feas=();
 while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
 wdir="$1";
 
-check_execs bc gmm-latgen-faster-parallel
+check_execs bc gmm-latgen-biglm-faster qsub;
 check_files "$mdl";
 make_dirs "$wdir";
 
@@ -147,39 +154,54 @@ make_dirs "$wdir";
     error "--min_active must be a positive integer greater than or equal to 0!";
 [ "$min_active" -le "$max_active" ] || \
     error "--min_active must be lower than or equal to --max_active!";
-[ "$num_threads" -gt 0 ] || \
-    error "--num_threads must be a positive integer greater than 0!";
 [ "$prune_interval" -gt 0 ] || \
     error "--prune_interval must be a positive integer greater than 0!";
 # If best alignment is requested, 1-best word hypothesis has to be written too.
 [ "$write_best_align" = true ] && write_best_words=true;
 
-# Process all input features sequentially, since each
-# gmm-latgen-faster-parallel already uses multiple threads...
+# Launch a different task for each input feature specifier. This will print
+# the list of job IDs in each line.
+{
+cat <<EOF
+#!/bin/bash
+#$ -cwd -t 1-${#feas[@]}
+#$ ${qsub_opts}
+set -e;
+set -e;
+EOF
 for i in $(seq 1 ${#feas[@]}); do
     olattice="$wdir/lattice.$[i-1].ark";
     owords="$wdir/words.$[i-1].ark";
     oalign="$wdir/align.$[i-1].ark";
-    log="$wdir/gmm-latgen-faster-parallel.$[i-1].log";
-    [[ "$overwrite" = false && -s "$olattice" && \
-	( "$write_best_words" = false || -s "$owords" ) && \
-	( "$write_best_align" = false || -s "$oalign" ) ]] || \
-	gmm-latgen-faster-parallel \
-	--acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \
-	--beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \
-	--determinize-lattice="$determinize_lattice" \
-	--hash-ratio="$hash_ratio" --lattice-beam="$lattice_beam" \
-	--log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \
-	--max-mem="$max_mem" --min-active="$min_active" --minimize="$minimize" \
-	--num-threads="$num_threads" --num-threads-total="$[num_threads + 10]" \
-	--phone-determinize="$phone_determinize" \
-	--prune-interval="$prune_interval" \
-	--word-determinize="$word_determinize" \
-	--word-symbol-table="$word_symbol_table" \
-	"$mdl" "$fst" "${feas[i-1]}" "ark:$olattice" \
-	$([ "$write_best_words" = true ] && echo "ark:$owords") \
-	$([ "$write_best_align" = true ] && echo "ark:$oalign") &> "$log" || \
-        error "gmm-latgen-faster-parallel failed, see log file \"$log\"";
+    log="$wdir/gmm-latgen-biglm-faster.$[i-1].log";
+    cat <<EOF
+[[ \${SGE_TASK_ID} -eq $i ]] && {
+    [[ "$overwrite" = false && -s "$olattice" && \\
+	( "$write_best_words" = false || -s "$owords" ) && \\
+	( "$write_best_align" = false || -s "$oalign" ) ]] || \\
+	gmm-latgen-biglm-faster \\
+	--acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \\
+	--beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \\
+	--determinize-lattice="$determinize_lattice" \\
+	--hash-ratio="$hash_ratio" --lattice-beam="$lattice_beam" \\
+	--log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \\
+	--max-mem="$max_mem" --min-active="$min_active" \\
+        --minimize="$minimize" \\
+	--phone-determinize="$phone_determinize" \\
+	--prune-interval="$prune_interval" \\
+	--word-determinize="$word_determinize" \\
+	--word-symbol-table="$word_symbol_table" \\
+	"$mdl" "$fst" "$old_lm" "$new_lm" "${feas[i-1]}" "ark:$olattice" \\
+	$([ "$write_best_words" = true ] && echo "ark:$owords") \\
+	$([ "$write_best_align" = true ] && echo "ark:$oalign") \\
+	&> "$log" || {
+          echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-biglm-faster failed, see log file \""$log\"" >&2; exit 1;
+        }
+    exit 0;
+}
+EOF
 done;
+} | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
+    error "qsub job submission failed!";
 
 exit 0;

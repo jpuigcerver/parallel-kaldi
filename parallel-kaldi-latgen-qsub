@@ -35,12 +35,14 @@ qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 # Generic options
 overwrite=false;
 help_message="
-Usage: parallel-kaldi-latgen-qsub [options] mdl fst fea1_rspec [fea2_rspec ...]
-                                  work_dir
+Usage: parallel-kaldi-latgen-qsub [options] mdl fst fea1 [fea2 ...] work_dir
 
 Description:
-   Decode features using a GMM-based model and producing lattices and,
-   optionally, the 1-best word decoding and alignment.
+   Generate lattices from a GMM-based model and a decoding FST. Optionally,
+   the 1-best word decoding and alignment can also be obtained.
+
+   The input decoding FST and the features are interpreted as rxspecifiers
+   (see Kaldi documentation).
 
    e.g: parallel-kaldi-latgen-qsub mdl hclg.fst ark:test.fea wdir
 
@@ -123,7 +125,9 @@ feas=();
 while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
 wdir="$1";
 
-check_execs bc gmm-latgen-faster-parallel
+echo "${#feas[@]} ${feas[@]}" >&2;
+
+check_execs bc gmm-latgen-faster-parallel qsub;
 check_files "$mdl" "$fst";
 make_dirs "$wdir";
 
@@ -159,6 +163,14 @@ make_dirs "$wdir";
 
 # Launch a different task for each input feature specifier. This will print
 # the list of job IDs in each line.
+{
+cat <<EOF
+#!/bin/bash
+#$ -cwd -t 1-${#feas[@]}
+#$ -p mp ${num_threads}
+#$ ${qsub_opts}
+set -e;
+EOF
 for i in $(seq 1 ${#feas[@]}); do
     olattice="$wdir/lattice.$[i-1].ark";
     owords="$wdir/words.$[i-1].ark";
@@ -191,8 +203,8 @@ cat <<EOF
     exit 0;
 }
 EOF
-done | qsub -cwd -t "1-${#feas[@]}" -p mp ${num_threads} ${qsub_opts} | \
-	      awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
-	      error "qsub job submission failed!";
+done;
+} | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
+    error "qsub job submission failed!";
 
 exit 0;
