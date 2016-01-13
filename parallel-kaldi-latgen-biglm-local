@@ -10,7 +10,7 @@ SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
     && exit 1);
 
 # Options for gmm-latgen-biglm-faster
-acoustic_scale=0.1;
+acoustic_scale=1.0;
 allow_partial=false;
 beam=1000;
 beam_delta=0.5;
