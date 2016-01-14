@@ -99,7 +99,7 @@ Options:
                                  Interval (in frames) at which to prune tokens.
   --qsub_opts                  : (string, default = \"$qsub_opts\")
                                  Options passed to the qsub command. Note:
-                                 -cwd, -p mp, and -t are automatically set.
+                                 -cwd and -t are automatically set.
   --word_determinize           : (boolean, default = $word_determinize)
                                  If true, do a second pass of determinization on
                                  words only (see also --phone_determinize).
@@ -195,7 +195,7 @@ for i in $(seq 1 ${#feas[@]}); do
 	$([ "$write_best_words" = true ] && echo "ark:$owords") \\
 	$([ "$write_best_align" = true ] && echo "ark:$oalign") \\
 	&> "$log" || {
-          echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-biglm-faster failed, see log file \""$log\"" >&2; exit 1;
+          echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-biglm-faster failed, see log file \"$log\"" >&2; exit 1;
         }
     exit 0;
 }
