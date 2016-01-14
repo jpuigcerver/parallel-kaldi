@@ -140,7 +140,7 @@ if [ "$qsub" = true ]; then
         --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
         --max_mem "$max_mem" --min_active "$min_active" \
         --minimize "$minimize" --overwrite "$overwrite" \
-        --phone_determinize "$phone_determinize" \
+        --num_threads "$num_threads" --phone_determinize "$phone_determinize" \
         --prune_interval "$prune_interval" --qsub_opts "$qsub_opts" \
         --word_determinize "$word_determinize" \
         --word_symbol_table "$word_symbol_table" \
@@ -156,7 +156,7 @@ else
         --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
         --max_mem "$max_mem" --min_active "$min_active" \
         --minimize "$minimize" --overwrite "$overwrite" \
-        --phone_determinize "$phone_determinize" \
+        --num_threads "$num_threads" --phone_determinize "$phone_determinize" \
         --prune_interval "$prune_interval" \
         --word_determinize "$word_determinize" \
         --word_symbol_table "$word_symbol_table" \

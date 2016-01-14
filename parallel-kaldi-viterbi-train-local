@@ -168,6 +168,11 @@ final_gaussian="${num_gaussian[${#num_gaussian[@]} - 1]}";
 # different from the specified target. Inform the user in that case.
 [ "$final_gaussian" -ne "$num_gaussian_target" ] && \
     warning "The final number of mixtures in each p.d.f. is $final_gaussian";
+# Check whether the final model is already trained to avoid work.
+final_mdl="$wdir/gmm_${final_gaussian}/it_${mle_iterations}/mdl";
+[ -s "$final_mdl" -a "$overwrite" = false ] && \
+    msg "Avoiding re-training: found a previous model in \"$final_mdl\"" && \
+    exit 0;
 
 for i in $(seq 1 ${#num_gaussian[@]}); do
     cg=${num_gaussian[i-1]};
