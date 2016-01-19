@@ -159,17 +159,44 @@ make_dirs "$wdir";
 # If best alignment is requested, 1-best word hypothesis has to be written too.
 [ "$write_best_align" = true ] && write_best_words=true;
 
+# Check previous results, in order to avoid re-doing work.
+pending_feas=();
+for i in $(seq 1 ${#feas[@]}); do
+    olattice="$wdir/lattice.$[i-1].ark";
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    log="$wdir/gmm-latgen-faster-parallel.$[i-1].log";
+    [[ "$overwrite" = false && -s "$olattice" && \
+        ( "$write_best_words" = false || -s "$owords" ) && \
+        ( "$write_best_align" = false || -s "$oalign" ) ]] && \
+        grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
+    pending_feas+=("$i");
+    # Remove previous results, just in case.
+    rm -f "$olattice" "$owords" "$oalign";
+done;
+if [ ${#pending_feas[@]} -eq 0 ]; then
+    # No pending features to process. Exit normally.
+    exit 0;
+elif [ ${#pending_feas[@]} -eq ${#feas[@]} ]; then
+    # All input feature partitions must be processed.
+    qsub_tasks="1-${#feas[@]}";
+else
+    # Only a subset of the input features must be processed.
+    qsub_tasks="$(echo "${pending_feas[@]}" | sed "s| |,|g")";
+fi;
+
 # Launch a different task for each input feature specifier. This will print
 # the list of job IDs in each line.
 {
 cat <<EOF
 #!/bin/bash
-#$ -cwd -t 1-${#feas[@]}
+#$ -cwd
 #$ -pe mp ${num_threads}
+#$ -t ${qsub_tasks}
 #$ ${qsub_opts}
 set -e;
 EOF
-for i in $(seq 1 ${#feas[@]}); do
+for i in ${pending_feas[@]}; do
     olattice="$wdir/lattice.$[i-1].ark";
     owords="$wdir/words.$[i-1].ark";
     oalign="$wdir/align.$[i-1].ark";
