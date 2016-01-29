@@ -1,0 +1,111 @@
+#!/bin/bash
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
+### Load useful functions.
+. "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
+    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
+    && exit 1);
+
+# lattice-best-path options
+acoustic_scale=1;
+lm_scale=1;
+word_symbol_table="";
+write_best_align=false;
+# QSub options
+qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
+# Generic options
+gzip=true;
+overwrite=false;
+help_message="
+Usage: parallel-kaldi-lat-best-path-qsub [options] lat1 [lat2 ...] work_dir
+
+Description:
+
+   e.g: parallel-kaldi-lat-best-path-qsub ark:lat1.ark ark:lat2.ark wdir
+
+Options:
+  --acoustic_scale             : (float, default = $acoustic_scale)
+                                 Scaling factor for acoustic likelihoods.
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
+  --lm_scale                   : (float, default = $lm_scale)
+                                 Scaling factor for graph/lm costs.
+  --overwrite                  : (boolean, default = $overwrite)
+                                 If true, overwrite previously created files.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd and -t are automatically set.
+
+";
+. "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
+    error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
+[ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
+[ $# -lt 2 ] && error "Wrong number of arguments. Check the usage with --help";
+lats=();
+while [ $# -gt 1 ]; do lats+=("$1"); shift; done;
+wdir="$1";
+
+make_dirs "$wdir";
+
+# Check previous results, in order to avoid re-doing work.
+pending_lats=();
+for i in $(seq 1 ${#lats[@]}); do
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    [[ "$overwrite" = false && ( -s "$owords" || -s "$owords.gz" ) && \
+        ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] \
+        && continue;
+    pending_lats+=("$i");
+    # Remove previous results, just in case.
+    rm -f "$owords" "$oalign" "$owords.gz" "$oalign.gz";
+done;
+if [ ${#pending_lats[@]} -eq 0 ]; then
+    # No pending lattices to process. Exit normally.
+    exit 0;
+elif [ ${#pending_lats[@]} -eq ${#lats[@]} ]; then
+    # All input lattice partitions must be processed.
+    qsub_tasks="1-${#lats[@]}";
+else
+    # Only a subset of the input lattices must be processed.
+    qsub_tasks="$(echo "${pending_lats[@]}" | sed "s| |,|g")";
+fi;
+
+{
+cat <<EOF
+#!/bin/bash
+#$ -cwd
+#$ -t ${qsub_tasks}
+#$ ${qsub_opts}
+set -e;
+EOF
+for i in ${pending_lats[@]}; do
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    log="$wdir/lattice-best-path.$[i-1].log";
+    if [ "$gzip" = true ]; then
+        owords_spec="ark:|gzip -c -9 > $owords.gz";
+        oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+    else
+        owords_spec="ark:$owords";
+        oalign_spec="ark:$oalign";
+    fi;
+    cat <<EOF
+[[ \${SGE_TASK_ID} -eq $i ]] && {
+  [[ "$overwrite" = false && ( -s "$owords" || -s "$owords.gz" )  &&
+     ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] \\
+     || lattice-best-path --acoustic-scale="$acoustic_scale" --lm-scale="$lm_scale" \\
+        --word-symbol-table="$word_symbol_table" "${lats[i-1]}" \\
+        "$owords_spec" \\
+        $([ "$write_best_align" = true ] && echo "\"$oalign_spec\"") &> "$log" || {
+        echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: lattice-best-path failed, see log file \"$log\"" >&2; exit 1;
+      }
+}
+EOF
+done;
+} | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
+    error "qsub job submission failed!";
+
+exit 0;

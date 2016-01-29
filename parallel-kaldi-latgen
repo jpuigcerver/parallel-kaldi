@@ -16,6 +16,7 @@ beam=1000;
 beam_delta=0.5;
 delta=0.000976562;
 determinize_lattice=true;
+gzip=true;
 hash_ratio=2;
 lattice_beam=10;
 log_sum_exp_prune=0;
@@ -69,6 +70,8 @@ Options:
                                  If true, determinize the lattice (in a special
                                  sense, keeping only best pdf-sequence for each
                                  word-sequence).
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
   --hash_ratio                 : (float, default = $hash_ratio)
                                  Setting used in decoder to control hash
                                  behavior.
@@ -135,7 +138,7 @@ if [ "$qsub" = true ]; then
     parallel-kaldi-latgen-qsub \
         --acoustic_scale "$acoustic_scale" --allow_partial "$allow_partial" \
         --beam "$beam" --beam_delta "$beam_delta" --delta "$delta" \
-        --determinize_lattice "$determinize_lattice" \
+        --determinize_lattice "$determinize_lattice" --gzip "$gzip" \
         --hash_ratio "$hash_ratio" --lattice_beam "$lattice_beam" \
         --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
         --max_mem "$max_mem" --min_active "$min_active" \
@@ -151,7 +154,7 @@ else
     parallel-kaldi-latgen-local \
         --acoustic_scale "$acoustic_scale" --allow_partial "$allow_partial" \
         --beam "$beam" --beam_delta "$beam_delta" --delta "$delta" \
-        --determinize_lattice "$determinize_lattice" \
+        --determinize_lattice "$determinize_lattice" --gzip "$gzip" \
         --hash_ratio "$hash_ratio" --lattice_beam "$lattice_beam" \
         --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
         --max_mem "$max_mem" --min_active "$min_active" \

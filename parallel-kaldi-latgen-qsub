@@ -16,6 +16,7 @@ beam=1000;
 beam_delta=0.5;
 delta=0.000976562;
 determinize_lattice=true;
+gzip=true;
 hash_ratio=2;
 lattice_beam=10;
 log_sum_exp_prune=0;
@@ -68,6 +69,8 @@ Options:
                                  If true, determinize the lattice (in a special
                                  sense, keeping only best pdf-sequence for each
                                  word-sequence).
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
   --hash_ratio                 : (float, default = $hash_ratio)
                                  Setting used in decoder to control hash
                                  behavior.
@@ -166,13 +169,14 @@ for i in $(seq 1 ${#feas[@]}); do
     owords="$wdir/words.$[i-1].ark";
     oalign="$wdir/align.$[i-1].ark";
     log="$wdir/gmm-latgen-faster-parallel.$[i-1].log";
-    [[ "$overwrite" = false && -s "$olattice" && \
-        ( "$write_best_words" = false || -s "$owords" ) && \
-        ( "$write_best_align" = false || -s "$oalign" ) ]] && \
+    [[ "$overwrite" = false && \
+        ( -s "$olattice" || -s "$olattice.gz" ) && \
+        ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \
+        ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \
         grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
     pending_feas+=("$i");
     # Remove previous results, just in case.
-    rm -f "$olattice" "$owords" "$oalign";
+    rm -f "$olattice" "$olattice.gz" "$owords" "$oalign";
 done;
 if [ ${#pending_feas[@]} -eq 0 ]; then
     # No pending features to process. Exit normally.
@@ -201,11 +205,21 @@ for i in ${pending_feas[@]}; do
     owords="$wdir/words.$[i-1].ark";
     oalign="$wdir/align.$[i-1].ark";
     log="$wdir/gmm-latgen-faster-parallel.$[i-1].log";
+    if [ "$gzip" = true ]; then
+        olattice_spec="ark:|gzip -c -9 > $olattice.gz";
+        owords_spec="ark:|gzip -c -9 > $owords.gz";
+        oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+    else
+        olattice_spec="ark:$olattice";
+        owords_spec="ark:$owords";
+        oalign_spec="ark:$oalign";
+    fi;
 cat <<EOF
 [[ \${SGE_TASK_ID} -eq $i ]] && {
-    [[ "$overwrite" = false && -s "$olattice" && \\
-	( "$write_best_words" = false || -s "$owords" ) && \\
-	( "$write_best_align" = false || -s "$oalign" ) ]] || \\
+    [[ "$overwrite" = false && \\
+        ( -s "$olattice" || -s "$olattice.gz" ) && \\
+	( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \\
+	( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] || \\
 	gmm-latgen-faster-parallel \\
 	--acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \\
 	--beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \\
@@ -214,14 +228,14 @@ cat <<EOF
 	--log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \\
 	--max-mem="$max_mem" --min-active="$min_active" \\
         --minimize="$minimize" --num-threads="$num_threads" \\
-        --num-threads-total="$[num_threads + 10]" \\
+        --num-threads-total="$num_threads" \\
 	--phone-determinize="$phone_determinize" \\
 	--prune-interval="$prune_interval" \\
 	--word-determinize="$word_determinize" \\
 	--word-symbol-table="$word_symbol_table" \\
-	"$mdl" "$fst" "${feas[i-1]}" "ark:$olattice" \\
-	$([ "$write_best_words" = true ] && echo "ark:$owords") \\
-	$([ "$write_best_align" = true ] && echo "ark:$oalign") \\
+	"$mdl" "$fst" "${feas[i-1]}" "$olattice_spec" \\
+	$([ "$write_best_words" = true ] && echo "\"$owords_spec\"") \\
+	$([ "$write_best_align" = true ] && echo "\"$oalign_spec\"") \\
 	&> "$log" || {
           echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-faster-parallel failed, see log file \"$log\"" >&2; exit 1;
         }

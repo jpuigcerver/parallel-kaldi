@@ -6,13 +6,12 @@ export LC_NUMERIC=C;
 SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 ### Load useful functions.
 . "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
-    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
-    && exit 1);
+    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"" >&2 && exit 1);
 
 # Options for gmm-align-compiled
 acoustic_scale=1.0;
 align_equal=true;
-beam=1000;
+beam=10000;
 careful=false;
 retry_beam=0;
 self_loop_scale=1.0;
@@ -28,19 +27,22 @@ transition_min_count=5;
 update_flags=mvwt;
 # MLE iterations
 mle_iterations=10;
-# Generic options
+# QSub options
+qsub=false;
+qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
+# Options for this script
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-mle-local [options] fst1_rspec fea1_rspec
-                                        [fst2_rspec fea2_rspec ...]
-                                        init_mdl work_dir
+Usage: parallel-kaldi-viterbi-mle [options] fst1_rspec fea1_rspec
+                                  [fst2_rspec fea2_rspec ...]
+                                  init_mdl work_dir
 
 Description:
    Perform Maximum Likelihood Estimation of GMM-based acoustic model using
    the statistics from a Viterbi forced alignment.
 
-   e.g: parallel-kaldi-viterbi-mle-local ark:train.fst.1 ark:train.fea.1 \\
+   e.g: parallel-kaldi-viterbi-mle ark:train.fst.1 ark:train.fea.1 \\
         ark:train.fst.2 ark:train.fea.2 init_mdl output_dir
 
 Options:
@@ -73,6 +75,12 @@ Options:
                                  Number of Viterbi MLE iterations.
   --overwrite                  : (boolean, default = $overwrite)
                                  If true, overwrite previously created files.
+  --qsub                       : (boolean, default = $qsub)
+                                 If true, run jobs in a cluster using qsub
+                                 instead of the local machine.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd and -t are automatically set.
   --remove_low_count_gaussians : (boolean, default = $remove_low_count_gaussians)
                                  If true, remove Gaussians that fall below the
                                  floors.
@@ -107,8 +115,7 @@ while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc parallel-kaldi-viterbi-mle-iter-local gmm-info gmm-mixup;
-check_files "$old_mdl";
+check_execs bc parallel-kaldi-viterbi-mle-iter gmm-info gmm-mixup;
 make_dirs "$wdir";
 
 # Check option values
@@ -118,7 +125,7 @@ make_dirs "$wdir";
 # Perform --mle_iterations iterations of the MLE with Viterbi alignment.
 for k in $(seq 1 $mle_iterations); do
     msg "--- Viterbi MLE iteration $k (of $mle_iterations)";
-    parallel-kaldi-viterbi-mle-iter-local \
+    hold_jid=$(parallel-kaldi-viterbi-mle-iter \
 	--align_equal \
 	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
 	--acoustic_scale "$acoustic_scale" \
@@ -127,6 +134,7 @@ for k in $(seq 1 $mle_iterations); do
 	--min_gaussian_weight "$min_gaussian_weight" \
 	--min_variance "$min_variance" \
 	--overwrite "$overwrite" \
+        --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
 	--remove_low_count_gaussians "$remove_low_count_gaussians" \
 	--retry_beam "$retry_beam" \
 	--self_loop_scale "$self_loop_scale" \
@@ -135,9 +143,14 @@ for k in $(seq 1 $mle_iterations); do
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
 	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/it_${k}" || exit 1;
+	"$old_mdl" "${wdir}/it_${k}") || exit 1;
     # Point old_mdl to the newest model.
     old_mdl="${wdir}/it_${k}/mdl";
+    # If running in qsub, next iteration must wait for the current one.
+    [ -z "$hold_jid" ] || qsub_hold_jid="-hold_jid $hold_jid";
 done;
+
+# Print job id of the latest iteration, so scripts calling this can wait.
+[ "$qsub" = true -a -n "$hold_jid" ] && echo "$hold_jid";
 
 exit 0;

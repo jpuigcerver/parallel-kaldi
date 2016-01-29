@@ -20,8 +20,12 @@ word_insertion_penalty=0;
 # QSub options
 qsub=false;
 qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
-# Generic options
+# Tool options
+gzip=true;
 overwrite=false;
+word_symbol_table="";
+write_best_words=false;
+write_best_align=false;
 help_message="
 Usage: parallel-kaldi-lat-scale [options] lat1 [lat2 ...] work_dir
 
@@ -49,6 +53,8 @@ Options:
   --acoustic2lm_scale          : (float, default = $acoustic2lm_scale)
                                  Add this times original acoustic costs to LM
                                  costs.
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
   --inv_acoustic_scale         : (float, default = $inv_acoustic_scale)
                                  An alternative way of setting the acoustic
                                  scale: you can set its inverse. Use this as a
@@ -70,6 +76,15 @@ Options:
                                  Word insertion penalty. Word means the symbols
                                  of the output alphabet in the lattice. This is
                                  equivalent to HTK's word insertion penalty.
+  --word_symbol_table          : (string, default = \"$word_symbol_table\")
+                                 Symbol table for words (for debug output).
+  --write_best_align           : (boolean, default = $write_best_align)
+                                 If true, writes an ARK file with the 1-best
+                                 alignment hypothesis in the output directory.
+  --write_best_words           : (boolean, default = $write_best_words)
+                                 If true, writes an ARK file with the 1-best
+                                 word sequence hypothesis in the output
+                                 directory.
 ";
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
@@ -83,17 +98,25 @@ make_dirs "$wdir";
 
 if [ "$qsub" = true ]; then
     parallel-kaldi-lat-scale-qsub --acoustic_scale "$acoustic_scale" \
-        --acoustic2lm_scale "$acoustic2lm_scale" \
+        --acoustic2lm_scale "$acoustic2lm_scale" --gzip "$gzip" \
         --inv_acoustic_scale "$inv_acoustic_scale" \
         --lm_scale "$lm_scale" --lm2acoustic_scale "$lm2acoustic_scale" \
         --overwrite "$overwrite" --qsub_opts "$qsub_opts" \
-        --word_insertion_penalty "$word_insertion_penalty" || exit 1;
+        --word_insertion_penalty "$word_insertion_penalty" \
+        --word_symbol_table "$word_symbol_table" \
+        --write_best_words "$write_best_words" \
+        --write_best_align "$write_best_align" \
+        "${lats[@]}" "$wdir" || exit 1;
 else
     parallel-kaldi-lat-scale-local --acoustic_scale "$acoustic_scale" \
-        --acoustic2lm_scale "$acoustic2lm_scale" \
+        --acoustic2lm_scale "$acoustic2lm_scale" --gzip "$gzip" \
         --inv_acoustic_scale "$inv_acoustic_scale" \
         --lm_scale "$lm_scale" --lm2acoustic_scale "$lm2acoustic_scale" \
         --overwrite "$overwrite" \
-        --word_insertion_penalty "$word_insertion_penalty" || exit 1;
+        --word_insertion_penalty "$word_insertion_penalty" \
+        --word_symbol_table "$word_symbol_table" \
+        --write_best_words "$write_best_words" \
+        --write_best_align "$write_best_align" \
+        "${lats[@]}" "$wdir" || exit 1;
 fi;
 exit 0;

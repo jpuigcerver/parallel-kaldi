@@ -12,7 +12,7 @@ SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 # Options for gmm-align-compiled
 acoustic_scale=1.0;
 align_equal=true;
-beam=1000;
+beam=10000;
 careful=false;
 retry_beam=0;
 self_loop_scale=1.0;
@@ -34,13 +34,16 @@ num_gaussian_scale=2;
 min_count=20;
 perturb_factor=0.01;
 power=0.2;
+# QSub options
+qsub=false;
+qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 # Generic options
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-train-local [options] fst1_rspec fea1_rspec
-                                          [fst2_rspec fea2_rspec ...]
-                                          init_mdl work_dir
+Usage: parallel-kaldi-viterbi-train [options] fst1_rspec fea1_rspec
+                                    [fst2_rspec fea2_rspec ...]
+                                    init_mdl work_dir
 
 Description:
    Perform traditional training of a GMM-based acoustic model using the
@@ -48,7 +51,7 @@ Description:
    with 1 (or a few number of) gaussian mixture(s) and increases this number
    after a few iterations of Viterbi MLE training.
 
-   e.g: parallel-kaldi-viterbi-train-local ark:train.fst.1 ark:train.fea.1 \\
+   e.g: parallel-kaldi-viterbi-train ark:train.fst.1 ark:train.fea.1 \\
         ark:train.fst.2 ark:train.fea.2 init_mdl output_dir
 
 Options:
@@ -98,6 +101,12 @@ Options:
   --power                      : (float, default = $power)
                                  Power to allocate Gaussians to states while
                                  mixing up.
+  --qsub                       : (boolean, default = $qsub)
+                                 If true, run jobs in a cluster using qsub
+                                 instead of the local machine.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd and -t are automatically set.
   --remove_low_count_gaussians : (boolean, default = $remove_low_count_gaussians)
                                  If true, remove Gaussians that fall below the
                                  floors.
@@ -132,8 +141,7 @@ while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc parallel-kaldi-viterbi-mle-local gmm-info gmm-mixup;
-check_files "$old_mdl";
+check_execs bc parallel-kaldi-viterbi-mle gmm-info gmm-mixup;
 make_dirs "$wdir";
 
 # Check option values
@@ -179,13 +187,14 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
     # Perform equal alignment only for the first iteration.
     [ $i -gt 1 ] && align_equal=false;
     msg "+++ Training with $cg (of $final_gaussian) gaussian mixtures";
-    parallel-kaldi-viterbi-mle-local \
+    hold_jid=$(parallel-kaldi-viterbi-mle \
 	--align_equal "$align_equal" --acoustic_scale "$acoustic_scale" \
 	--beam "$beam" --careful "$careful" --clean "$clean" \
 	--min_gaussian_occupancy "$min_gaussian_occupancy" \
 	--min_gaussian_weight "$min_gaussian_weight" \
 	--min_variance "$min_variance" --mle_iterations "$mle_iterations" \
-	--overwrite "$overwrite" \
+	--overwrite "$overwrite" --qsub "$qsub" \
+        --qsub_opts "$qsub_opts $qsub_hold_jid" \
 	--remove_low_count_gaussians "$remove_low_count_gaussians" \
 	--retry_beam "$retry_beam" --self_loop_scale "$self_loop_scale" \
 	--share_for_pdfs "$share_for_pdfs" \
@@ -193,7 +202,9 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
 	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/gmm_${cg}" || exit 1;
+	"$old_mdl" "${wdir}/gmm_${cg}") || exit 1;
+    # If running in qsub, next iteration must wait for the current one.
+    [ -z "$hold_jid" ] || qsub_hold_jid="-hold_jid $hold_jid";
     # Point old_mdl to the newest model and old_occ to the p.d.f. occupancies.
     old_mdl="${wdir}/gmm_${cg}/it_${mle_iterations}/mdl";
     old_occ="${wdir}/gmm_${cg}/it_${mle_iterations}/occ";
@@ -203,11 +214,29 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	log="${wdir}/gmm_${num_gaussian[i]}/it_0/gmm-mixup.log";
 	make_dirs "${wdir}/gmm_${num_gaussian[i]}/it_0";
 	[ -s "$mdl" -a $overwrite = false ] || \
+            if [ $qsub = true ]; then
+            hold_jid=$(( cat <<EOF
+#!/bin/bash
+#$ -cwd
+#$ ${qsub_opts}
+#$ ${qsub_hold_jid}
+gmm-mixup --min-count="$min_count" \
+    --mix-up="$[${num_gaussian[i]} * $total_pdfs]" \
+    --perturb-factor="$perturb_factor" --power="$power" \
+    "$old_mdl" "$old_occ" "$mdl" &> "$log" || ( \
+  echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: GMM mixing up failed, see log file \"$log\"!" && exit 1 );
+EOF
+            ) | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
+               error "qsub job submission failed!") || exit 1;
+            # If running in qsub, next iteration must wait for the current one.
+            [ -z "$hold_jid" ] || qsub_hold_jid="-hold_jid $hold_jid";
+        else
 	    gmm-mixup --min-count="$min_count" \
-	    --mix-up="$[${num_gaussian[i]} * $total_pdfs]" \
-	    --perturb-factor="$perturb_factor" --power="$power" \
-	    "$old_mdl" "$old_occ" "$mdl" &> "$log" || \
-	    error "GMM mixing up failed, see log file \"$log\"";
+	        --mix-up="$[${num_gaussian[i]} * $total_pdfs]" \
+	        --perturb-factor="$perturb_factor" --power="$power" \
+	        "$old_mdl" "$old_occ" "$mdl" &> "$log" || \
+	        error "GMM mixing up failed, see log file \"$log\"";
+        fi;
 	old_mdl="$mdl";
     fi;
 done;

@@ -19,8 +19,12 @@ lm2acoustic_scale=0;
 word_insertion_penalty=0;
 # QSub options
 qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
-# Generic options
+# Custom options
+gzip=true;
 overwrite=false;
+word_symbol_table="";
+write_best_words=false;
+write_best_align=false;
 help_message="
 Usage: parallel-kaldi-lat-scale-qsub [options] lat1 [lat2 ...] work_dir
 
@@ -48,6 +52,8 @@ Options:
   --acoustic2lm_scale          : (float, default = $acoustic2lm_scale)
                                  Add this times original acoustic costs to LM
                                  costs.
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
   --inv_acoustic_scale         : (float, default = $inv_acoustic_scale)
                                  An alternative way of setting the acoustic
                                  scale: you can set its inverse. Use this as a
@@ -66,11 +72,22 @@ Options:
                                  Word insertion penalty. Word means the symbols
                                  of the output alphabet in the lattice. This is
                                  equivalent to HTK's word insertion penalty.
+  --word_symbol_table          : (string, default = \"$word_symbol_table\")
+                                 Symbol table for words (for debug output).
+  --write_best_align           : (boolean, default = $write_best_align)
+                                 If true, writes an ARK file with the 1-best
+                                 alignment hypothesis in the output directory.
+  --write_best_words           : (boolean, default = $write_best_words)
+                                 If true, writes an ARK file with the 1-best
+                                 word sequence hypothesis in the output
+                                 directory.
 ";
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
 [ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
 [ $# -lt 2 ] && error "Wrong number of arguments. Check the usage with --help";
+[ "$write_best_align" = true ] && write_best_words=true;
+
 lats=();
 while [ $# -gt 1 ]; do lats+=("$1"); shift; done;
 wdir="$1";
@@ -79,12 +96,17 @@ make_dirs "$wdir";
 
 # Check previous results, in order to avoid re-doing work.
 pending_lats=();
-for i in $(seq 1 ${#[@]}); do
+for i in $(seq 1 ${#lats[@]}); do
     olattice="$wdir/lattice.$[i-1].ark";
-    [[ "$overwrite" = false && -s "$olattice" ]] && continue;
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    [[ "$overwrite" = false && $(check_gzipped_files "$olattice") && \
+        ( "$write_best_words" = false || $(check_gzipped_files "$owords") ) && \
+        ( "$write_best_align" = false || $(check_gzipped_files "$oalign") ) ]] \
+        && continue;
     pending_lats+=("$i");
     # Remove previous results, just in case.
-    rm -f "$olattice";
+    rm -f "$olattice"{,.gz} "$owords"{,.gz} "$oalign"{,.gz};
 done;
 if [ ${#pending_lats[@]} -eq 0 ]; then
     # No pending lattices to process. Exit normally.
@@ -106,22 +128,49 @@ cat <<EOF
 set -e;
 EOF
 for i in ${pending_lats[@]}; do
-cat <<EOF
-[[ \${SGE_TASK_ID} -eq $i ]] && {
-  [ "$overwrite" = false -a -s "$wdir/lattice.$[i-1].ark" ] || \\
-    ( lattice-scale --acoustic-scale="$acoustic_scale" \\
-      --acoustic2lm-scale="$acoustic2lm_scale" \\
-      --inv-acoustic-scale="$inv_acoustic_scale" \\
-      --lm-scale="$lm_scale" \\
-      --lm2acoustic_scale="$lm2acoustic_scale" \\
-      "${lats[i-1]}" ark:- | \\
-      lattice-add-penalty --word-ins-penalty="$word_insertion_penalty" \\
-      ark:- "ark:$wdir/lattice.$[i-1].ark" ) \\
-      &> "$wdir/lattice-scale.$[i-1].log" || {
-        echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: lattice-scale failed, see log file \"$log\"" >&2; exit 1;
-      }
-}
+    olattice="$wdir/lattice.$[i-1].ark";
+    owords="$wdir/words.$[i-1].ark";
+    oalign="$wdir/align.$[i-1].ark";
+    if [ "$gzip" = true ]; then
+        olattice_wspec="ark:|gzip -c -9 > $olattice.gz";
+        olattice_rspec="ark:gunzip -c $olattice.gz|";
+        owords_wspec="ark:|gzip -c -9 > $owords.gz";
+        oalign_wspec="ark:|gzip -c -9 > $oalign.gz";
+    else
+        olattice_wspec="ark:$olattice";
+        olattice_rspec="ark:$olattice";
+        owords_wspec="ark:$owords";
+        oalign_wspec="ark:$oalign";
+    fi;
+    echo "[[ \${SGE_TASK_ID} -eq $i ]] && {";
+    cat <<EOF
+    [[ "$overwrite" = false && ( -s "$olattice" || -s "$olattice.gz" ) ]] || \\
+      ( lattice-scale --acoustic-scale="$acoustic_scale" \\
+        --acoustic2lm-scale="$acoustic2lm_scale" \\
+        --inv-acoustic-scale="$inv_acoustic_scale" \\
+        --lm-scale="$lm_scale" \\
+        --lm2acoustic_scale="$lm2acoustic_scale" \\
+        "${lats[i-1]}" ark:- | \\
+        lattice-add-penalty --word-ins-penalty="$word_insertion_penalty" \\
+        ark:- "$olattice_wspec" ) \\
+        &> "$wdir/lattice-scale.$[i-1].log" || {
+          echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: lattice-scale failed, see log file \"$wdir/lattice-scale.$[i-1].log\"" >&2; exit 1;
+        }
 EOF
+    if [ "$write_best_words" = true ]; then
+        cat <<EOF
+    [[ "$overwrite" = false && ( -s "$owords" || -s "$owords.gz" ) && \\
+      ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] || \\
+      lattice-best-path --acoustic-scale="$acoustic_scale" --lm-scale="$lm_scale" \\
+      --word-symbol-table="$word_symbol_table" "$olattice_rspec" \\
+      "$owords_wspec" \\
+      $([ "$write_best_align" = true ] && echo "\"$oalign_wspec\"") &> "$wdir/lattice-best-path.$[i-1].log" || {
+        echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: lattice-best-path failed, see log file \"$wdir/lattice-best-path.$[i-1].log\"" >&2; exit 1;
+      }
+EOF
+    fi;
+    echo "}";
+
 done;
 } | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
     error "qsub job submission failed!";

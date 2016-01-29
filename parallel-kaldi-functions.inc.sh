@@ -94,7 +94,7 @@ print int(ceil($1 * $2))
 function check_execs () {
     while [ $# -gt 0 ]; do
 	which "$1" &> /dev/null || \
-	    error "Executable \"$f\" is missing in your PATH!";
+	    error "Executable \"$1\" is missing in your PATH!";
 	shift;
     done;
 }
@@ -130,4 +130,11 @@ function make_dirs () {
 	mkdir -p "$1" || error "Directory \"$1\" could not be created!";
 	shift;
     done;
+}
+
+### This function checks whether the given files or a the compressed version
+### with gzip exists and are not empty.
+function check_gzipped_files () {
+    while [ $# -gt 0 ]; do [[ -s "$1" || -s "$1.gz" ]] || return 1; done;
+    return 0;
 }
