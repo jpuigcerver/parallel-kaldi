@@ -17,6 +17,10 @@ careful=false;
 retry_beam=0;
 self_loop_scale=1.0;
 transition_scale=1.0;
+# Options for gmm-fb-compiled
+beam_backward=10000;
+beam_forward=10000;
+delta=0.000976562
 # Options for gmm-est
 min_gaussian_occupancy=10;
 min_gaussian_weight=0.00001;
@@ -30,6 +34,7 @@ update_flags=mvwt;
 mle_iterations=10;
 num_gaussian_target=128;
 num_gaussian_scale=2;
+viterbi=true;
 # Options for gmm-mixup
 min_count=20;
 perturb_factor=0.01;
@@ -41,29 +46,37 @@ qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-train [options] fst1_rspec fea1_rspec
+Usage: parallel-kaldi-train [options] fst1_rspec fea1_rspec
                                     [fst2_rspec fea2_rspec ...]
                                     init_mdl work_dir
 
 Description:
-   Perform traditional training of a GMM-based acoustic model using the
-   statistics from a Viterbi forced alignment. The training starts typically
-   with 1 (or a few number of) gaussian mixture(s) and increases this number
-   after a few iterations of Viterbi MLE training.
+   Perform traditional training of a GMM-based acoustic model.
 
-   e.g: parallel-kaldi-viterbi-train ark:train.fst.1 ark:train.fea.1 \\
+   The statistics may be obtained from the Viterbi forced alignment,
+   or using the Baum-Welch (Forward-Backward) algorithm. Choose between
+   the two using the --viterbi option.
+
+   The training starts typically with 1 (or a few number of) gaussian
+   mixture(s) and increases this number after a few iterations of MLE
+   training.
+
+   e.g: parallel-kaldi-train ark:train.fst.1 ark:train.fea.1 \\
         ark:train.fst.2 ark:train.fea.2 init_mdl output_dir
 
 Options:
   --acoustic_scale             : (float, default = $acoustic_scale)
                                  Scaling factor for acoustic likelihoods.
   --align_equal                : (boolean, default = $align_equal)
-                                 Perform equal alignment instead of Viterbi
-                                 alignment in the first iteration. This is
-                                 useful when the initial model was not
-                                 initialized before.
+                                 Perform equal alignment instead in the
+                                 first iteration. This is useful when the
+                                 initial model was not initialized before.
   --beam                       : (float, default = $beam)
-                                 Decoding beam used in alignment.
+                                 Decoding beam used in Viterbi alignment.
+  --beam_backward              : (float, default = $beam_backward)
+                                 Beam prunning threshold during backward pass.
+  --beam_forward               : (float, default = $beam_forward)
+                                 Beam prunning threshold during forward pass.
   --careful                    : (boolean, default = $careful)
                                  If true, do 'careful' alignment, which is
                                  better at detecting alignment failure
@@ -74,6 +87,9 @@ Options:
   --config                     : (string, default = \"\")
                                  Read options from this config file. Multiple
                                  config files can be specified.
+  --delta                      : (float, default = $delta)
+                                 Comparison delta during Forward-Backward
+                                 [see fstshortestdistance].
   --min_count                  : (float, default = $min_count)
                                  Minimum per-Gaussian count enforced while
                                  mixing up.
@@ -128,6 +144,11 @@ Options:
                                  acoustics).
   --update_flags               : (string, default = \"$update_flags\")
                                  Which GMM parameters to update: subset of mvwt.
+  --viterbi                    : (boolean, default = $viterbi)
+                                 If true, use the statistics from the Viterbi
+                                 alignment to perform the MLE update. Otherwise,
+                                 use statistics gathered from the Baum-Welch
+                                 (Forward-Backward) algorithm.
 ";
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
@@ -187,9 +208,11 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
     # Perform equal alignment only for the first iteration.
     [ $i -gt 1 ] && align_equal=false;
     msg "+++ Training with $cg (of $final_gaussian) gaussian mixtures";
-    hold_jid=$(parallel-kaldi-viterbi-mle \
+    hold_jid=$(parallel-kaldi-mle \
 	--align_equal "$align_equal" --acoustic_scale "$acoustic_scale" \
-	--beam "$beam" --careful "$careful" --clean "$clean" \
+	--beam "$beam" --delta "$delta" \
+        --beam_backward "$beam_backward" --beam_forward "$beam_forward" \
+        --careful "$careful" --clean "$clean" \
 	--min_gaussian_occupancy "$min_gaussian_occupancy" \
 	--min_gaussian_weight "$min_gaussian_weight" \
 	--min_variance "$min_variance" --mle_iterations "$mle_iterations" \
@@ -201,8 +224,8 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	--transition_floor "$transition_floor" \
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
-	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/gmm_${cg}") || exit 1;
+	--update_flags "$update_flags" --viterbi "$viterbi" \
+        "${fsts_and_feas[@]}" "$old_mdl" "${wdir}/gmm_${cg}") || exit 1;
     # If running in qsub, next iteration must wait for the current one.
     [ -z "$hold_jid" ] || qsub_hold_jid="-hold_jid $hold_jid";
     # Point old_mdl to the newest model and old_occ to the p.d.f. occupancies.

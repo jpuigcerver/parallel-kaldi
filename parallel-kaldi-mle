@@ -16,6 +16,10 @@ careful=false;
 retry_beam=0;
 self_loop_scale=1.0;
 transition_scale=1.0;
+# Options for gmm-fb-compiled
+beam_backward=10000;
+beam_forward=10000;
+delta=0.000976562
 # Options for gmm-est
 min_gaussian_occupancy=10;
 min_gaussian_weight=0.00001;
@@ -27,6 +31,7 @@ transition_min_count=5;
 update_flags=mvwt;
 # MLE iterations
 mle_iterations=10;
+viterbi=true;
 # QSub options
 qsub=false;
 qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
@@ -34,15 +39,17 @@ qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-mle [options] fst1_rspec fea1_rspec
-                                  [fst2_rspec fea2_rspec ...]
-                                  init_mdl work_dir
+Usage: parallel-kaldi-mle [options] fst1_rspec fea1_rspec
+                          [fst2_rspec fea2_rspec ...]
+                          init_mdl work_dir
 
 Description:
-   Perform Maximum Likelihood Estimation of GMM-based acoustic model using
-   the statistics from a Viterbi forced alignment.
+   Perform Maximum Likelihood Estimation of GMM-based acoustic model.
+   The statistics may be obtained from the Viterbi forced alignment,
+   or using the Baum-Welch (Forward-Backward) algorithm. Choose between
+   the two using the --viterbi option.
 
-   e.g: parallel-kaldi-viterbi-mle ark:train.fst.1 ark:train.fea.1 \\
+   e.g: parallel-kaldi-mle ark:train.fst.1 ark:train.fea.1 \\
         ark:train.fst.2 ark:train.fea.2 init_mdl output_dir
 
 Options:
@@ -54,7 +61,11 @@ Options:
                                  useful when the initial model was not
                                  initialized before.
   --beam                       : (float, default = $beam)
-                                 Decoding beam used in alignment.
+                                 Decoding beam used during Viterbi alignment.
+  --beam_backward              : (float, default = $beam_backward)
+                                 Beam prunning threshold during backward pass.
+  --beam_forward               : (float, default = $beam_forward)
+                                 Beam prunning threshold during forward pass.
   --careful                    : (boolean, default = $careful)
                                  If true, do 'careful' alignment, which is
                                  better at detecting alignment failure
@@ -65,6 +76,9 @@ Options:
   --config                     : (string, default = \"\")
                                  Read options from this config file. Multiple
                                  config files can be specified.
+  --delta                      : (float, default = $delta)
+                                 Comparison delta during Forward-Backward
+                                 [see fstshortestdistance].
   --min_gaussian_occupancy     : (float, default = $min_gaussian_occupancy)
                                  Minimum occupancy to update a Gaussian.
   --min_gaussian_weight        : (float, default = $min_gaussian_weight)
@@ -102,6 +116,11 @@ Options:
                                  acoustics).
   --update_flags               : (string, default = \"$update_flags\")
                                  Which GMM parameters to update: subset of mvwt.
+  --viterbi                    : (boolean, default = $viterbi)
+                                 If true, use the statistics from the Viterbi
+                                 alignment to perform the MLE update. Otherwise,
+                                 use statistics gathered from the Baum-Welch
+                                 (Forward-Backward) algorithm.
 ";
 . "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
     error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
@@ -115,7 +134,8 @@ while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc parallel-kaldi-viterbi-mle-iter gmm-info gmm-mixup;
+check_execs bc parallel-kaldi-viterbi-mle-iter parallel-kaldi-fb-mle-iter \
+    gmm-info gmm-mixup;
 make_dirs "$wdir";
 
 # Check option values
@@ -125,7 +145,8 @@ make_dirs "$wdir";
 # Perform --mle_iterations iterations of the MLE with Viterbi alignment.
 for k in $(seq 1 $mle_iterations); do
     msg "--- Viterbi MLE iteration $k (of $mle_iterations)";
-    hold_jid=$(parallel-kaldi-viterbi-mle-iter \
+    hold_jid=$(if [ $viterbi = true ]; then \
+        parallel-kaldi-viterbi-mle-iter \
 	--align_equal \
 	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
 	--acoustic_scale "$acoustic_scale" \
@@ -143,7 +164,27 @@ for k in $(seq 1 $mle_iterations); do
 	--transition_min_count "$transition_min_count" \
 	--transition_scale "$transition_scale" \
 	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/it_${k}") || exit 1;
+	"$old_mdl" "${wdir}/it_${k}"; else \
+        parallel-kaldi-fb-mle-iter \
+	--align_equal \
+	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
+	--acoustic_scale "$acoustic_scale" \
+	--beam_backward "$beam_backward" --beam_forward "$beam_forward" \
+        --clean "$clean" --delta "$delta" \
+	--min_gaussian_occupancy "$min_gaussian_occupancy" \
+	--min_gaussian_weight "$min_gaussian_weight" \
+	--min_variance "$min_variance" \
+	--overwrite "$overwrite" \
+        --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
+	--remove_low_count_gaussians "$remove_low_count_gaussians" \
+	--retry_beam "$retry_beam" \
+	--self_loop_scale "$self_loop_scale" \
+	--share_for_pdfs "$share_for_pdfs" \
+	--transition_floor "$transition_floor" \
+	--transition_min_count "$transition_min_count" \
+	--transition_scale "$transition_scale" \
+	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
+	"$old_mdl" "${wdir}/it_${k}"; fi) || exit 1;
     # Point old_mdl to the newest model.
     old_mdl="${wdir}/it_${k}/mdl";
     # If running in qsub, next iteration must wait for the current one.
