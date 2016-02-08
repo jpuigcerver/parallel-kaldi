@@ -134,7 +134,7 @@ while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc parallel-kaldi-viterbi-mle-iter parallel-kaldi-fb-mle-iter \
+check_execs bc parallel-kaldi-mle-viterbi-iter parallel-kaldi-mle-fb-iter \
     gmm-info gmm-mixup;
 make_dirs "$wdir";
 
@@ -144,47 +144,49 @@ make_dirs "$wdir";
 
 # Perform --mle_iterations iterations of the MLE with Viterbi alignment.
 for k in $(seq 1 $mle_iterations); do
-    msg "--- Viterbi MLE iteration $k (of $mle_iterations)";
-    hold_jid=$(if [ $viterbi = true ]; then \
-        parallel-kaldi-viterbi-mle-iter \
-	--align_equal \
-	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
-	--acoustic_scale "$acoustic_scale" \
-	--beam "$beam" --careful "$careful" --clean "$clean" \
-	--min_gaussian_occupancy "$min_gaussian_occupancy" \
-	--min_gaussian_weight "$min_gaussian_weight" \
-	--min_variance "$min_variance" \
-	--overwrite "$overwrite" \
-        --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
-	--remove_low_count_gaussians "$remove_low_count_gaussians" \
-	--retry_beam "$retry_beam" \
-	--self_loop_scale "$self_loop_scale" \
-	--share_for_pdfs "$share_for_pdfs" \
-	--transition_floor "$transition_floor" \
-	--transition_min_count "$transition_min_count" \
-	--transition_scale "$transition_scale" \
-	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/it_${k}"; else \
-        parallel-kaldi-fb-mle-iter \
-	--align_equal \
-	$(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
-	--acoustic_scale "$acoustic_scale" \
-	--beam_backward "$beam_backward" --beam_forward "$beam_forward" \
-        --clean "$clean" --delta "$delta" \
-	--min_gaussian_occupancy "$min_gaussian_occupancy" \
-	--min_gaussian_weight "$min_gaussian_weight" \
-	--min_variance "$min_variance" \
-	--overwrite "$overwrite" \
-        --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
-	--remove_low_count_gaussians "$remove_low_count_gaussians" \
-	--retry_beam "$retry_beam" \
-	--self_loop_scale "$self_loop_scale" \
-	--share_for_pdfs "$share_for_pdfs" \
-	--transition_floor "$transition_floor" \
-	--transition_min_count "$transition_min_count" \
-	--transition_scale "$transition_scale" \
-	--update_flags "$update_flags" "${fsts_and_feas[@]}" \
-	"$old_mdl" "${wdir}/it_${k}"; fi) || exit 1;
+    if [ $viterbi = true ]; then
+        msg "--- Viterbi MLE iteration $k/$mle_iterations";
+        hold_jid=$(parallel-kaldi-mle-viterbi-iter \
+	    --align_equal \
+	    $(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
+	    --acoustic_scale "$acoustic_scale" \
+	    --beam "$beam" --careful "$careful" --clean "$clean" \
+	    --min_gaussian_occupancy "$min_gaussian_occupancy" \
+	    --min_gaussian_weight "$min_gaussian_weight" \
+	    --min_variance "$min_variance" \
+	    --overwrite "$overwrite" \
+            --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
+	    --remove_low_count_gaussians "$remove_low_count_gaussians" \
+	    --retry_beam "$retry_beam" \
+	    --self_loop_scale "$self_loop_scale" \
+	    --share_for_pdfs "$share_for_pdfs" \
+	    --transition_floor "$transition_floor" \
+	    --transition_min_count "$transition_min_count" \
+	    --transition_scale "$transition_scale" \
+	    --update_flags "$update_flags" "${fsts_and_feas[@]}" \
+	    "$old_mdl" "${wdir}/it_${k}");
+    else
+        msg "--- Forward-Backward MLE iteration $k/$mle_iterations";
+        hold_jid=$(parallel-kaldi-mle-fb-iter \
+	    --align_equal \
+	    $(if [ $k = 1 ]; then echo $align_equal; else echo false; fi) \
+	    --acoustic_scale "$acoustic_scale" \
+	    --beam_backward "$beam_backward" --beam_forward "$beam_forward" \
+            --clean "$clean" --delta "$delta" \
+	    --min_gaussian_occupancy "$min_gaussian_occupancy" \
+	    --min_gaussian_weight "$min_gaussian_weight" \
+	    --min_variance "$min_variance" \
+	    --overwrite "$overwrite" \
+            --qsub "$qsub" --qsub_opts "$qsub_opts $qsub_hold_jid" \
+	    --remove_low_count_gaussians "$remove_low_count_gaussians" \
+	    --self_loop_scale "$self_loop_scale" \
+	    --share_for_pdfs "$share_for_pdfs" \
+	    --transition_floor "$transition_floor" \
+	    --transition_min_count "$transition_min_count" \
+	    --transition_scale "$transition_scale" \
+	    --update_flags "$update_flags" "${fsts_and_feas[@]}" \
+	    "$old_mdl" "${wdir}/it_${k}");
+    fi || exit 1;
     # Point old_mdl to the newest model.
     old_mdl="${wdir}/it_${k}/mdl";
     # If running in qsub, next iteration must wait for the current one.

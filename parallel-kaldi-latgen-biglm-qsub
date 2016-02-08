@@ -180,12 +180,11 @@ done;
 if [ ${#pending_feas[@]} -eq 0 ]; then
     # No pending features to process. Exit normally.
     exit 0;
-elif [ ${#pending_feas[@]} -eq ${#feas[@]} ]; then
-    # All input feature partitions must be processed.
-    qsub_tasks="1-${#feas[@]}";
 else
-    # Only a subset of the input features must be processed.
-    qsub_tasks="$(echo "${pending_feas[@]}" | sed "s| |,|g")";
+    # SGE only admits continuous ranges, so relaunch all tasks between the
+    # first pending and the latest. Notice that later, some code is added to the
+    # tasks' script so that completed tasks do not re-do the job again.
+    qsub_tasks="${pending_feas[0]}-${pending_feas[@]:(-1)}";
 fi;
 
 # Launch a different task for each input feature specifier. This will print

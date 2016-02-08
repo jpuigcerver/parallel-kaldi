@@ -8,12 +8,12 @@ SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 . "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
     echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"" >&2 && exit 1);
 
-# Options for gmm-align-compiled
+# Options for gmm-fb-compiled
 acoustic_scale=1.0;
 align_equal=false;
-beam=10000;
-careful=false;
-retry_beam=0;
+beam_backward=10000;
+beam_forward=10000;
+delta=0.000976562
 self_loop_scale=1.0;
 transition_scale=1.0;
 # Options for gmm-est
@@ -32,15 +32,15 @@ qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
 overwrite=false;
 clean=false;
 help_message="
-Usage: parallel-kaldi-viterbi-mle-iter [options] fst1_rspec fea1_rspec
-                                       [fst2_rspec fea2_rspec ...]
-                                       old_mdl work_dir
+Usage: parallel-kaldi-fb-mle-iter [options] fst1_rspec fea1_rspec
+                                  [fst2_rspec fea2_rspec ...]
+                                  old_mdl work_dir
 
 Description:
    Perform Maximum Likelihood Estimation of GMM-based acoustic model using
-   the statistics from a Viterbi forced alignment.
+   the statistics from the Baum-Welch algorithm (Forward-Backward).
 
-   e.g: parallel-kaldi-viterbi-mle-iter \\
+   e.g: parallel-kaldi-fb-mle-iter \\
         ark:train.fst.1 ark:train.fea.1 ark:train.fst.2 ark:train.fea.2 \\
         old_mdl output_dir
 
@@ -48,21 +48,21 @@ Options:
   --acoustic_scale             : (float, default = $acoustic_scale)
                                  Scaling factor for acoustic likelihoods.
   --align_equal                : (boolean, default = $align_equal)
-                                 Perform equal alignment instead of Viterbi
-                                 alignment, typically used in the first
-                                 iteration of the MLE training.
-  --beam                       : (float, default = $beam)
-                                 Decoding beam used in alignment.
-  --careful                    : (boolean, default = $careful)
-                                 If true, do 'careful' alignment, which is
-                                 better at detecting alignment failure
-                                 (involves loop to start of decoding graph).
+                                 Perform equal alignment in the first iteration of
+                                 the MLE training.
+  --beam_backward              : (float, default = $beam_backward)
+                                 Beam prunning threshold during backward pass.
+  --beam_forward               : (float, default = $beam_forward)
+                                 Beam prunning threshold during forward pass.
   --clean                      : (boolean, default = $clean)
                                  Clean temporal accumulated statistics files
                                  after the MLE.
   --config                     : (string, default = \"\")
                                  Read options from this config file. Multiple
                                  config files can be specified.
+  --delta                      : (float, default = $delta)
+                                 Comparison delta during Forward-Backward
+                                 [see fstshortestdistance].
   --min_gaussian_occupancy     : (float, default = $min_gaussian_occupancy)
                                  Minimum occupancy to update a Gaussian.
   --min_gaussian_weight        : (float, default = $min_gaussian_weight)
@@ -80,8 +80,6 @@ Options:
   --remove_low_count_gaussians : (boolean, default = $remove_low_count_gaussians)
                                  If true, remove Gaussians that fall below the
                                  floors.
-  --retry_beam                 : (float, default = $retry_beam)
-                                 Decoding beam for second try at alignment.
   --self_loop_scale            : (float, default = $self_loop_scale)
                                  Scale of self-loop versus non-self-loop log
                                  probs (relative to acoustics).
@@ -114,23 +112,23 @@ while [ $# -gt 2 ]; do fsts+=("$1"); feas+=("$2"); shift 2; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc align-equal-compiled gmm-align-compiled gmm-acc-stats-ali \
+check_execs bc align-equal-compiled gmm-fb-compiled gmm-acc-stats \
     gmm-est gmm-sum-accs qsub;
 make_dirs "$wdir";
 
 # Check option values
 [ "$(echo "$acoustic_scale >= 0.0" | bc -l)" = 1 ] || \
     error "--acoustic_scale must be greater than or equal to 0.0!";
-[ "$(echo "$beam > 0.0" | bc -l)" = 1 ] || \
-    error "--beam must be greater than 0.0!";
+[ "$(echo "$beam_backward > 0.0" | bc -l)" = 1 ] || \
+    error "--beam_backward must be greater than 0.0!";
+[ "$(echo "$beam_forward > 0.0" | bc -l)" = 1 ] || \
+    error "--beam_forward must be greater than 0.0!";
 [ "$(echo "$min_gaussian_occupancy >= 0.0" | bc -l)" = 1 ] || \
     error "--min_gaussian_occupancy must be greater than or equal to 0.0!";
 [ "$(echo "$min_gaussian_weight > 0.0" | bc -l)" = 1 ] || \
     error "--min_gaussian_weight must be greater than 0.0!";
 [ "$(echo "$min_variance > 0.0" | bc -l)" = 1 ] || \
     error "--min_variance must be greater than 0.0!";
-[ "$(echo "$retry_beam >= 0.0" | bc -l)" = 1 ] || \
-    error "--retry_beam must be greater than or equal to 0.0!";
 [ "$(echo "$self_loop_scale >= 0.0" | bc -l)" = 1 ] || \
     error "--self_loop_scale must be greater than or equal to 0.0!";
 [ "$(echo "$transition_floor >= 0.0" | bc -l)" = 1 ] || \
@@ -150,7 +148,7 @@ make_dirs "$wdir";
 pending_tasks=(); accs=();
 for i in $(seq 1 ${#fsts[@]}); do
     acc="${wdir}/acc.$i";
-    log="${wdir}/gmm-acc-stats-ali.$i.log";
+    log="${wdir}/gmm-acc-stats.$i.log";
     accs+=("$acc");
     [ -s "$acc" -a "$overwrite" = false ] && \
         grep -q "Overall avg like" "$log" && continue;
@@ -159,26 +157,23 @@ for i in $(seq 1 ${#fsts[@]}); do
 done;
 
 if [ $qsub = true ]; then
-    # First, compute statistics from each of the input fsts/features.
-    hold_jid=$(if [ ${#pending_tasks[@]} -gt 0 ]; then
-    if [ ${#pending_tasks[@]} -eq ${#fsts[@]} ]; then
-        # All input feature partitions must be processed.
-        qsub_tasks="1-${#fsts[@]}";
-    else
-        # Only a subset of the input features must be processed.
-        qsub_tasks="$(echo "${pending_fsts[@]}" | sed "s| |,|g")";
-    fi;
-    ( cat <<EOF
+    if [ ${#pending_tasks[@]} -gt 0 ]; then
+        # SGE only admits continuous ranges, so redo all tasks between the
+        # first pending and the latest.
+        qsub_tasks="${pending_tasks[0]}-${pending_tasks[@]:(-1)}";
+        qsub_script="$(mktemp)";
+        (
+            cat <<EOF
 #!/bin/bash
 #$ -cwd
 #$ -t ${qsub_tasks}
 #$ ${qsub_opts}
 EOF
-    for i in "${pending_tasks[@]}"; do
-        acc="${wdir}/acc.$i";
-        log="${wdir}/gmm-acc-stats-ali.$i.log";
-        if [ "$align_equal" = true ]; then
-            cat <<EOF
+            for i in "${pending_tasks[@]}"; do
+                acc="${wdir}/acc.$i";
+                log="${wdir}/gmm-acc-stats.$i.log";
+                if [ "$align_equal" = true ]; then
+                    cat <<EOF
 [ \${SGE_TASK_ID} -eq $i ] && {
   ( align-equal-compiled "${fsts[i-1]}" "${feas[i-1]}" ark:- | \
     gmm-acc-stats-ali "$old_mdl" "${feas[i-1]}" ark:- "$acc" ) &> "$log" || \
@@ -186,28 +181,32 @@ EOF
   exit 0;
 }
 EOF
-        else
-            cat <<EOF
+                else
+                    cat <<EOF
 [ \${SGE_TASK_ID} -eq $i ] && {
-  ( gmm-align-compiled \
-    --acoustic_scale=$acoustic_scale --beam=$beam --careful=$careful \
-    --retry_beam=$retry_beam --self_loop_scale=$self_loop_scale \
-    --transition_scale=$transition_scale "$old_mdl" "${fsts[i-1]}" \
-    "${feas[i-1]}" ark:- | gmm-acc-stats-ali "$old_mdl" "${feas[i-1]}" \
-    ark:- "$acc" ) &> "$log" || exit 1;
+  ( gmm-fb-compiled \
+    --acoustic-scale=$acoustic_scale \
+    --beam-backward=$beam_backward --beam-forward=$beam_forward \
+    --delta=$delta --self-loop-scale=$self_loop_scale \
+    --transition-scale=$transition_scale "$old_mdl" \
+    "${fsts[i-1]}" "${feas[i-1]}" ark:- | gmm-acc-stats "$old_mdl" \
+    "${feas[i-1]}" ark:- "$acc" ) &> "$log" || exit 1;
   exit 0;
 }
 EOF
-        fi;
-    done ) | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
-        error "qsub job submission failed!";
-    fi) || exit 1;
+                fi;
+            done
+        ) > "$qsub_script";
+        hold_jid="$(qsub -terse "$qsub_script")" || error "qsub job submission failed!";
+    fi;
     # Hold next command to pending statistics accumulation?
     [ -z "$hold_jid" ] || hold_jid="-hold_jid $hold_jid";
 
     # Perform MLE of the parameters from the statistics computed before and
     # write a new model to $wdir/mdl.
-    ( cat <<EOF
+    qsub_script="$(mktemp)";
+    (
+        cat <<EOF
 #!/bin/bash
 #$ -cwd
 #$ ${qsub_opts}
@@ -217,7 +216,7 @@ gmm-est --min-gaussian-occupancy=$min_gaussian_occupancy \
   --remove-low-count-gaussians=$remove_low_count_gaussians \
   --share-for-pdfs=$share_for_pdfs --transition-floor=$transition_floor \
   --transition-min-count=$transition_min_count --write-occs="${wdir}/occ" \
-  --update-flags="$update_flags" "$old_mdl" "gmm-sum-accs - ${accs[@]}|" \
+  --update-flags="$update_flags" "$old_mdl" "gmm-sum-accs - ${accs[*]}|" \
   "${wdir}/mdl" &> "${wdir}/gmm-est.log" || ( \
   echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: Maximum Likelihood Estimation failed, see \"${wdir}/gmm-est.log\"" && exit 1 );
 
@@ -225,34 +224,34 @@ gmm-est --min-gaussian-occupancy=$min_gaussian_occupancy \
 [ $clean = false ] || rm -f ${accs[@]} || exit 1;
 exit 0;
 EOF
-    ) | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
-        error "qsub job submission failed!";
+    ) > "$qsub_script";
+    qsub -terse "$qsub_script" || error "qsub job submission failed!";
 else
     bg_jobs=();
     for i in "${pending_tasks[@]}"; do
         acc="${wdir}/acc.$i";
-        log="${wdir}/gmm-acc-stats-ali.$i.log";
+        log="${wdir}/gmm-acc-stats.$i.log";
 	if [ $align_equal = true ]; then
 	    ( align-equal-compiled "${fsts[i-1]}" "${feas[i-1]}" ark:- | \
 		gmm-acc-stats-ali "$old_mdl" "${feas[i-1]}" ark:- "$acc" ) \
 		&> "$log" &
 	    bg_jobs+=("$!");
 	else
-	    ( gmm-align-compiled \
-		--acoustic_scale=$acoustic_scale --beam=$beam \
-		--careful=$careful --retry_beam=$retry_beam \
-		--self_loop_scale=$self_loop_scale \
-		--transition_scale=$transition_scale "$old_mdl" \
+            ( gmm-fb-compiled \
+                --acoustic-scale=$acoustic_scale \
+                --beam-backward=$beam_backward --beam-forward=$beam_forward \
+                --delta=$delta --self-loop-scale=$self_loop_scale \
+                --transition-scale=$transition_scale "$old_mdl" \
                 "${fsts[i-1]}" "${feas[i-1]}" ark:- | \
-		gmm-acc-stats-ali "$old_mdl" "${feas[i-1]}" ark:- "$acc" ) \
-		&> "$log" &
+                gmm-acc-stats "$old_mdl" "${feas[i-1]}" ark:- "$acc" ) \
+                &> "$log" &
 	    bg_jobs+=("$!");
 	fi;
     done;
     # Wait for all processes running in the background.
     any_failure=0;
     for i in $(seq 1 ${#bg_jobs[@]}); do
-        log="${wdir}/gmm-acc-stats-ali.$i.log";
+        log="${wdir}/gmm-acc-stats.$i.log";
         wait ${bg_jobs[i-1]} || ( \
 	    error_continue "Worker failed, see \"$log\"" && any_failure=1 );
     done;
@@ -267,7 +266,7 @@ else
         --transition-floor=$transition_floor \
         --transition-min-count=$transition_min_count \
         --update-flags="$update_flags" --write-occs="${wdir}/occ" \
-        "$old_mdl" "gmm-sum-accs - ${accs[@]}|" "${wdir}/mdl" \
+        "$old_mdl" "gmm-sum-accs - ${accs[*]}|" "${wdir}/mdl" \
         &> "${wdir}/gmm-est.log" || error \
         "Maximum Likelihood Estimation failed, see \"${wdir}/gmm-est.log\"";
     # Clean temporal files with the accumulated statistics (optionally) and

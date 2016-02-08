@@ -162,7 +162,7 @@ while [ $# -gt 2 ]; do fsts_and_feas+=("$1"); shift 1; done;
 old_mdl="$1";
 wdir="$2";
 
-check_execs bc parallel-kaldi-viterbi-mle gmm-info gmm-mixup;
+check_execs bc parallel-kaldi-mle gmm-info gmm-mixup;
 make_dirs "$wdir";
 
 # Check option values

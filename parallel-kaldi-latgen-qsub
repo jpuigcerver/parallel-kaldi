@@ -176,17 +176,16 @@ for i in $(seq 1 ${#feas[@]}); do
         grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
     pending_feas+=("$i");
     # Remove previous results, just in case.
-    rm -f "$olattice" "$olattice.gz" "$owords" "$oalign";
+    rm -f "$olattice"{,.gz} "$owords"{,.gz} "$oalign"{,.gz};
 done;
 if [ ${#pending_feas[@]} -eq 0 ]; then
     # No pending features to process. Exit normally.
     exit 0;
-elif [ ${#pending_feas[@]} -eq ${#feas[@]} ]; then
-    # All input feature partitions must be processed.
-    qsub_tasks="1-${#feas[@]}";
 else
-    # Only a subset of the input features must be processed.
-    qsub_tasks="$(echo "${pending_feas[@]}" | sed "s| |,|g")";
+    # SGE only admits continuous ranges, so relaunch all tasks between the
+    # first pending and the latest. Notice that later, some code is added to the
+    # tasks' script so that completed tasks do not re-do the job again.
+    qsub_tasks="${pending_feas[0]}-${pending_feas[@]:(-1)}";
 fi;
 
 # Launch a different task for each input feature specifier. This will print
@@ -214,12 +213,16 @@ for i in ${pending_feas[@]}; do
         owords_spec="ark:$owords";
         oalign_spec="ark:$oalign";
     fi;
-cat <<EOF
+    # The SGE script will check again if the task has some work to do. This is
+    # needed because SGE only allows to give continuous task ranges, and so,
+    # some works in the task range may be unnecessary.
+    cat <<EOF
 [[ \${SGE_TASK_ID} -eq $i ]] && {
-    [[ "$overwrite" = false && \\
+    ( [[ "$overwrite" = false && \\
         ( -s "$olattice" || -s "$olattice.gz" ) && \\
-	( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \\
-	( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] || \\
+        ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \\
+        ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \\
+        grep -s "Overall log-likelihood" "$log" ) || \\
 	gmm-latgen-faster-parallel \\
 	--acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \\
 	--beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \\
@@ -243,7 +246,6 @@ cat <<EOF
 }
 EOF
 done;
-} | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
-    error "qsub job submission failed!";
+} | qsub -terse | tail -n1 || error "qsub job submission failed!";
 
 exit 0;
