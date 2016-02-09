@@ -1,0 +1,224 @@
+#!/bin/bash
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
+### Load useful functions.
+. "${SDIR}/parallel-kaldi-functions.inc.sh" || ( \
+    echo "ERROR: Sourcing file \"${SDIR}/parallel-kaldi-functions.inc.sh\"">&2 \
+    && exit 1);
+
+# Options for gmm-decode-faster
+acoustic_scale=1.0;
+allow_partial=false;
+beam=1000;
+beam_delta=0.5;
+delta=0.000976562;
+hash_ratio=2;
+max_active=2147483647;
+min_active=200;
+word_symbol_table="";
+write_best_align=false;
+# QSub options
+qsub=false;
+qsub_opts="-l h_rt=24:00:00,h_vmem=4G";
+# Generic options
+gzip=true;
+overwrite=false;
+help_message="
+Usage: parallel-kaldi-decode [options] mdl fst fea1 [fea2 ...] work_dir
+
+Description:
+   Decode features using GMM-based model.
+
+   The input decoding FST and the features are interpreted as rxspecifiers
+   (see Kaldi documentation).
+
+   e.g: parallel-kaldi-decode mdl hclg.fst ark:test.fea wdir
+
+Options:
+  --acoustic_scale             : (float, default = $acoustic_scale)
+                                 Scaling factor for acoustic likelihoods.
+  --allow_partial              : (boolean, default = $allow_partial)
+                                 If true, produce output even if end state was
+                                 not reached.
+  --beam                       : (float, default = $beam)
+                                 Decoding beam.
+  --beam_delta                 : (float, default = $beam_delta)
+                                 Increment used in decoding. Larger is more
+                                 accurate (this parameter is obscure and relates
+                                 to a speedup in the way the max-active
+                                 constraint is applied).
+  --config                     : (string, default = \"\")
+                                 Read options from this config file. Multiple
+                                 config files can be specified.
+  --delta                      : (float, default = $delta)
+                                 Tolerance used in determinization.
+  --gzip                       : (boolean, default = $gzip)
+                                 If true, compress the output files using gzip.
+  --hash_ratio                 : (float, default = $hash_ratio)
+                                 Setting used in decoder to control hash
+                                 behavior.
+  --max_active                 : (integer, default = $max_active)
+                                 Decoder maximum number of active states.
+  --min_active                 : (integer, default = $min_active)
+                                 Decoder minimum number of active states.
+  --minimize                   : (boolean, default = $minimize)
+                                 If true, push and minimize after
+                                 determinization.
+  --overwrite                  : (boolean, default = $overwrite)
+                                 If true, overwrite previously created files.
+  --qsub                       : (boolean, default = $qsub)
+                                 If true, run jobs in a cluster using qsub
+                                 instead of the local machine.
+  --qsub_opts                  : (string, default = \"$qsub_opts\")
+                                 Options passed to the qsub command. Note:
+                                 -cwd, -p mp, and -t are automatically set.
+  --word_symbol_table          : (string, default = \"$word_symbol_table\")
+                                 Symbol table for words (for debug output).
+  --write_best_align           : (boolean, default = $write_best_align)
+                                 If true, writes an ARK file with the 1-best
+                                 alignment hypothesis in the output directory.
+";
+. "${SDIR}/parallel-kaldi-cmd-parse.inc.sh" || \
+    error "Sourcing file \"${SDIR}/parallel-kaldi-cmd-parse.inc.sh\"";
+[ $# -eq 0 ] && echo "$help_message" >&2 && exit 1;
+[ $# -lt 4 ] && error "Wrong number of arguments. Check the usage with --help";
+
+mdl="$1";
+fst="$2";
+shift 2;
+feas=();
+while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
+wdir="$1";
+
+check_execs bc gmm-decode-faster;
+check_files "$mdl" "$fst";
+make_dirs "$wdir";
+
+[ -z "$word_symbol_table" ] || check_files "$word_symbol_table";
+
+# Check option values
+[ "$(echo "$acoustic_scale >= 0.0" | bc -l)" = 1 ] || \
+    error "--acoustic_scale must be greater than or equal to 0.0!";
+[ "$(echo "$beam > 0.0" | bc -l)" = 1 ] || \
+    error "--beam must be greater than 0.0!";
+[ "$(echo "$beam_delta > 0.0" | bc -l)" = 1 ] || \
+    error "--beam_delta must be greater than 0.0!";
+[ "$(echo "$delta > 0.0" | bc -l)" = 1 ] || \
+    error "--delta must be greater than 0.0!";
+[ "$hash_ratio" -gt 1 ] || \
+    error "--hash_ratio must be a positive integer greater than 1!";
+[ "$max_active" -gt 0 ] || \
+    error "--max_active must be a positive integer greater than 0!";
+[ "$min_active" -ge 0 ] || \
+    error "--min_active must be a positive integer greater than or equal to 0!";
+[ "$min_active" -le "$max_active" ] || \
+    error "--min_active must be lower than or equal to --max_active!";
+
+# Check previous results, in order to avoid re-doing work.
+pending_feas=();
+for i in $(seq 1 ${#feas[@]}); do
+    owords="$wdir/words.$i.ark";
+    oalign="$wdir/align.$i.ark";
+    log="$wdir/gmm-decode-faster.$i.log";
+    [[ "$overwrite" = false && \
+        ( -s "$owords" || -s "$owords.gz" ) && \
+        ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \
+        grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
+    pending_feas+=("$i");
+    # Remove previous temporal results.
+    rm -f "$owords"{,.gz} "$oalign"{,.gz};
+done;
+if [ ${#pending_feas[@]} -eq 0 ]; then
+    # No pending features to process. Exit normally.
+    exit 0;
+else
+    # SGE only admits continuous ranges, so relaunch all tasks between the
+    # first pending and the latest. Notice that later, some code is added to the
+    # tasks' script so that completed tasks do not re-do the job again.
+    qsub_tasks="${pending_feas[0]}-${pending_feas[@]:(-1)}";
+fi;
+
+if [ "$qsub" = true ]; then
+    check_execs qsub;
+    # Launch a different task for each input feature specifier. This will print
+    # the list of job IDs in each line.
+    { cat <<EOF
+#!/bin/bash
+#$ -cwd
+#$ -pe mp ${num_threads}
+#$ -t ${qsub_tasks}
+#$ ${qsub_opts}
+set -e;
+EOF
+    for i in "${pending_feas[@]}"; do
+        owords="$wdir/words.$i.ark";
+        oalign="$wdir/align.$i.ark";
+        log="$wdir/gmm-decode-faster.$i.log";
+        if [ "$gzip" = true ]; then
+            owords_spec="ark:|gzip -c -9 > $owords.gz";
+            oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+        else
+            owords_spec="ark:$owords";
+            oalign_spec="ark:$oalign";
+        fi;
+        # The SGE script will check again if the task has some work to do.
+        # This is needed because SGE only allows to give continuous task
+        # ranges, and so, some works in the task range may already be completed.
+        cat <<EOF
+[[ \${SGE_TASK_ID} -eq $i ]] && {
+    ( [[ "$overwrite" = false && \\
+    ( -s "$owords" || -s "$owords.gz" ) && \\
+    ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \\
+    grep -s "Overall log-likelihood" "$log" ) || \\
+    gmm-decode-faster \\
+    --acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \\
+    --beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \\
+    --hash-ratio="$hash_ratio" --max-active="$max_active" \\
+    --min-active="$min_active" --word-symbol-table="$word_symbol_table" \\
+    "$mdl" "$fst" "${feas[i-1]}" "$owords_spec" \\
+    "$([ "$write_best_align" = true ] && echo "$oalign_spec")" &> "$log" || {
+        echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-decode-faster failed, see log file \"$log\"" >&2;
+        exit 1;
+    }
+EOF
+    done } | qsub -terse | tail -n1 || error "qsub job submission failed!";
+else
+    bg_jobs=();
+    for i in "${pending_feas[@]}"; do
+        owords="$wdir/words.$i.ark";
+        oalign="$wdir/align.$i.ark";
+        log="$wdir/gmm-latgen-faster-parallel.$i.log";
+        if [ "$gzip" = true ]; then
+            owords_spec="ark:|gzip -c -9 > $owords.gz";
+            oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+        else
+            owords_spec="ark:$owords";
+            oalign_spec="ark:$oalign";
+        fi;
+        [[ "$overwrite" = false && \
+            ( -s "$owords" || -s "$owords.gz" ) && \
+            ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] || \
+            gmm-decode-faster \
+            --acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \
+            --beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \
+            --hash-ratio="$hash_ratio" --max-active="$max_active" \
+            --min-active="$min_active" --word-symbol-table="$word_symbol_table" \
+            "$mdl" "$fst" "${feas[i-1]}" "$owords_spec" \
+            $([ "$write_best_align" = true ] && echo "$oalign_spec") &> "$log" || \
+            error "gmm-decode-faster failed, see log file \"$log\"";
+	bg_jobs+=("$!");
+    done;
+    # Wait for all processes running in the background.
+    any_failure=0;
+    for i in $(seq 1 ${#bg_jobs[@]}); do
+        log="$wdir/gmm-latgen-faster-parallel.$i.log";
+        wait ${bg_jobs[i-1]} || ( \
+	    error_continue "Worker failed, see \"$log\"" && any_failure=1 );
+    done;
+    [ $any_failure -eq 0 ] || exit 1;
+fi;
+
+exit 0;
