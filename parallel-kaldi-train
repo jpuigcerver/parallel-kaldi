@@ -238,7 +238,8 @@ for i in $(seq 1 ${#num_gaussian[@]}); do
 	make_dirs "${wdir}/gmm_${num_gaussian[i]}/it_0";
 	[ -s "$mdl" -a $overwrite = false ] || \
             if [ $qsub = true ]; then
-            hold_jid=$(( cat <<EOF
+            qsub_script="$(mktemp)";
+            ( cat <<EOF
 #!/bin/bash
 #$ -cwd
 #$ ${qsub_opts}
@@ -249,8 +250,9 @@ gmm-mixup --min-count="$min_count" \
     "$old_mdl" "$old_occ" "$mdl" &> "$log" || ( \
   echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: GMM mixing up failed, see log file \"$log\"!" && exit 1 );
 EOF
-            ) | qsub | awk '/Your job/{ gsub(/\..*/, "", $3); print $3}' || \
-               error "qsub job submission failed!") || exit 1;
+            ) > "$qsub_script";
+            hold_jid="$(qsub -terse "$qsub_script"|tail -n1|sed 's/\..*$//g')" || \
+                error "qsub job submission failed!";
             # If running in qsub, next iteration must wait for the current one.
             [ -z "$hold_jid" ] || qsub_hold_jid="-hold_jid $hold_jid";
         else

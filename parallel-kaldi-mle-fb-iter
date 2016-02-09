@@ -197,7 +197,8 @@ EOF
                 fi;
             done
         ) > "$qsub_script";
-        hold_jid="$(qsub -terse "$qsub_script")" || error "qsub job submission failed!";
+        hold_jid="$(qsub -terse "$qsub_script"|tail -n1|sed 's/\..*$//g')" || \
+            error "qsub job submission failed!";
     fi;
     # Hold next command to pending statistics accumulation?
     [ -z "$hold_jid" ] || hold_jid="-hold_jid $hold_jid";
@@ -225,7 +226,8 @@ gmm-est --min-gaussian-occupancy=$min_gaussian_occupancy \
 exit 0;
 EOF
     ) > "$qsub_script";
-    qsub -terse "$qsub_script" || error "qsub job submission failed!";
+    qsub -terse "$qsub_script" | tail -n1 | sed 's/\..*$//g' || \
+        error "qsub job submission failed!";
 else
     bg_jobs=();
     for i in "${pending_tasks[@]}"; do
