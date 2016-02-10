@@ -21,7 +21,7 @@ hash_ratio=2;
 lattice_beam=10;
 log_sum_exp_prune=0;
 max_active=2147483647;
-max_mem=50000000;
+max_mem=100000000;
 min_active=200;
 minimize=false;
 num_threads=1;
@@ -132,40 +132,166 @@ feas=();
 while [ $# -gt 1 ]; do feas+=("$1"); shift; done;
 wdir="$1";
 
-check_execs parallel-kaldi-latgen-local parallel-kaldi-latgen-qsub;
+check_execs bc gmm-latgen-faster-parallel;
+check_files "$mdl" "$fst";
+make_dirs "$wdir";
+
+[ -z "$word_symbol_table" ] || check_files "$word_symbol_table";
+
+# Check option values
+[ "$(echo "$acoustic_scale >= 0.0" | bc -l)" = 1 ] || \
+    error "--acoustic_scale must be greater than or equal to 0.0!";
+[ "$(echo "$beam > 0.0" | bc -l)" = 1 ] || \
+    error "--beam must be greater than 0.0!";
+[ "$(echo "$beam_delta > 0.0" | bc -l)" = 1 ] || \
+    error "--beam_delta must be greater than 0.0!";
+[ "$(echo "$delta > 0.0" | bc -l)" = 1 ] || \
+    error "--delta must be greater than 0.0!";
+[ "$hash_ratio" -gt 1 ] || \
+    error "--hash_ratio must be a positive integer greater than 1!";
+[ "$(echo "$lattice_beam > 0.0" | bc -l)" = 1 ] || \
+    error "--lattice_beam must be greater than 0.0!";
+[ "$(echo "$log_sum_exp_prune >= 0.0" | bc -l)" = 1 ] || \
+    error "--log_sum_exp_prune must be greater than or equal to 0.0!";
+[ "$max_active" -gt 0 ] || \
+    error "--max_active must be a positive integer greater than 0!";
+[ "$min_active" -ge 0 ] || \
+    error "--min_active must be a positive integer greater than or equal to 0!";
+[ "$min_active" -le "$max_active" ] || \
+    error "--min_active must be lower than or equal to --max_active!";
+[ "$num_threads" -gt 0 ] || \
+    error "--num_threads must be a positive integer greater than 0!";
+[ "$prune_interval" -gt 0 ] || \
+    error "--prune_interval must be a positive integer greater than 0!";
+# If best alignment is requested, 1-best word hypothesis has to be written too.
+[ "$write_best_align" = true ] && write_best_words=true;
+
+
+# Check previous results, in order to avoid re-doing work.
+pending_feas=();
+for i in $(seq 1 ${#feas[@]}); do
+    olattice="$wdir/lattice.$i.ark";
+    owords="$wdir/words.$i.ark";
+    oalign="$wdir/align.$i.ark";
+    log="$wdir/gmm-latgen-faster-parallel.$i.log";
+    [[ "$overwrite" = false && \
+        ( -s "$olattice" || -s "$olattice.gz" ) && \
+        ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \
+        ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \
+        grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
+    pending_feas+=("$i");
+    # Remove previous temporal results.
+    rm -f "$olattice"{,.gz} "$owords"{,.gz} "$oalign"{,.gz};
+done;
+if [ ${#pending_feas[@]} -eq 0 ]; then
+    # No pending features to process. Exit normally.
+    exit 0;
+else
+    # SGE only admits continuous ranges, so relaunch all tasks between the
+    # first pending and the latest. Notice that later, some code is added to the
+    # tasks' script so that completed tasks do not re-do the job again.
+    qsub_tasks="${pending_feas[0]}-${pending_feas[@]:(-1)}";
+fi;
 
 if [ "$qsub" = true ]; then
-    parallel-kaldi-latgen-qsub \
-        --acoustic_scale "$acoustic_scale" --allow_partial "$allow_partial" \
-        --beam "$beam" --beam_delta "$beam_delta" --delta "$delta" \
-        --determinize_lattice "$determinize_lattice" --gzip "$gzip" \
-        --hash_ratio "$hash_ratio" --lattice_beam "$lattice_beam" \
-        --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
-        --max_mem "$max_mem" --min_active "$min_active" \
-        --minimize "$minimize" --overwrite "$overwrite" \
-        --num_threads "$num_threads" --phone_determinize "$phone_determinize" \
-        --prune_interval "$prune_interval" --qsub_opts "$qsub_opts" \
-        --word_determinize "$word_determinize" \
-        --word_symbol_table "$word_symbol_table" \
-        --write_best_align "$write_best_align" \
-        --write_best_words "$write_best_words" \
-        "$mdl" "$fst" "${feas[@]}" "$wdir" || exit 1;
+    check_execs qsub;
+    # Launch a different task for each input feature specifier. This will print
+    # the list of job IDs in each line.
+    { cat <<EOF
+#!/bin/bash
+#$ -cwd
+#$ -pe mp ${num_threads}
+#$ -t ${qsub_tasks}
+#$ ${qsub_opts}
+set -e;
+EOF
+    for i in "${pending_feas[@]}"; do
+        olattice="$wdir/lattice.$i.ark";
+        owords="$wdir/words.$i.ark";
+        oalign="$wdir/align.$i.ark";
+        log="$wdir/gmm-latgen-faster-parallel.$i.log";
+        if [ "$gzip" = true ]; then
+            olattice_spec="ark:|gzip -c -9 > $olattice.gz";
+            owords_spec="ark:|gzip -c -9 > $owords.gz";
+            oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+        else
+            olattice_spec="ark:$olattice";
+            owords_spec="ark:$owords";
+            oalign_spec="ark:$oalign";
+        fi;
+        # The SGE script will check again if the task has some work to do.
+        # This is needed because SGE only allows to give continuous task
+        # ranges, and so, some works in the task range may already be completed.
+        cat <<EOF
+[[ \${SGE_TASK_ID} -eq $i ]] && {
+    ( [[ "$overwrite" = false && \\
+    ( -s "$olattice" || -s "$olattice.gz" ) && \\
+    ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \\
+    ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \\
+    grep -s "Overall log-likelihood" "$log" ) || ( \\
+    date "+%F %T" && \\
+    gmm-latgen-faster-parallel \\
+    --acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \\
+    --beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \\
+    --determinize-lattice="$determinize_lattice" \\
+    --hash-ratio="$hash_ratio" --lattice-beam="$lattice_beam" \\
+    --log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \\
+    --max-mem="$max_mem" --min-active="$min_active" \\
+    --minimize="$minimize" --num-threads="$num_threads" \\
+    --num-threads-total="$num_threads" \\
+    --phone-determinize="$phone_determinize" \\
+    --prune-interval="$prune_interval" \\
+    --word-determinize="$word_determinize" \\
+    --word-symbol-table="$word_symbol_table" \\
+    "$mdl" "$fst" "${feas[i-1]}" "$olattice_spec" \\
+    $([ "$write_best_words" = true ] && echo "\"$owords_spec\"") \\
+    $([ "$write_best_align" = true ] && echo "\"$oalign_spec\"") && \\
+    date "+%F %T" ) &> "$log" || {
+        echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-faster-parallel failed, see log file \"$log\"" >&2;
+        exit 1;
+    }
+EOF
+    done } | qsub -terse | tail -n1 || error "qsub job submission failed!";
 else
-    parallel-kaldi-latgen-local \
-        --acoustic_scale "$acoustic_scale" --allow_partial "$allow_partial" \
-        --beam "$beam" --beam_delta "$beam_delta" --delta "$delta" \
-        --determinize_lattice "$determinize_lattice" --gzip "$gzip" \
-        --hash_ratio "$hash_ratio" --lattice_beam "$lattice_beam" \
-        --log_sum_exp_prune "$log_sum_exp_prune" --max_active "$max_active" \
-        --max_mem "$max_mem" --min_active "$min_active" \
-        --minimize "$minimize" --overwrite "$overwrite" \
-        --num_threads "$num_threads" --phone_determinize "$phone_determinize" \
-        --prune_interval "$prune_interval" \
-        --word_determinize "$word_determinize" \
-        --word_symbol_table "$word_symbol_table" \
-        --write_best_align "$write_best_align" \
-        --write_best_words "$write_best_words" \
-        "$mdl" "$fst" "${feas[@]}" "$wdir" || exit 1;
+    # Process all input features sequentially, since each
+    # gmm-latgen-faster-parallel already uses multiple threads...
+    for i in "${pending_feas[@]}"; do
+        olattice="$wdir/lattice.$i.ark";
+        owords="$wdir/words.$i.ark";
+        oalign="$wdir/align.$i.ark";
+        log="$wdir/gmm-latgen-faster-parallel.$i.log";
+        if [ "$gzip" = true ]; then
+            olattice_spec="ark:|gzip -c -9 > $olattice.gz";
+            owords_spec="ark:|gzip -c -9 > $owords.gz";
+            oalign_spec="ark:|gzip -c -9 > $oalign.gz";
+        else
+            olattice_spec="ark:$olattice";
+            owords_spec="ark:$owords";
+            oalign_spec="ark:$oalign";
+        fi;
+        [[ "$overwrite" = false && \
+            ( -s "$olattice" || -s "$olattice.gz" ) && \
+            ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \
+            ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] || ( \
+            date "+%F %T" && \
+            gmm-latgen-faster-parallel \
+            --acoustic-scale="$acoustic_scale" --allow-partial="$allow_partial" \
+            --beam="$beam" --beam-delta="$beam_delta" --delta="$delta" \
+            --determinize-lattice="$determinize_lattice" \
+            --hash-ratio="$hash_ratio" --lattice-beam="$lattice_beam" \
+            --log-sum-exp-prune="$log_sum_exp_prune" --max-active="$max_active" \
+            --max-mem="$max_mem" --min-active="$min_active" --minimize="$minimize" \
+            --num-threads="$num_threads" --num-threads-total="$num_threads" \
+            --phone-determinize="$phone_determinize" \
+            --prune-interval="$prune_interval" \
+            --word-determinize="$word_determinize" \
+            --word-symbol-table="$word_symbol_table" \
+            "$mdl" "$fst" "${feas[i-1]}" "$olattice_spec" \
+            $([ "$write_best_words" = true ] && echo "$owords_spec") \
+            $([ "$write_best_align" = true ] && echo "$oalign_spec") && \
+            date "+%F %T" ) &> "$log" || \
+            error "gmm-latgen-faster-parallel failed, see log file \"$log\"";
+    done;
 fi;
 
 exit 0;
