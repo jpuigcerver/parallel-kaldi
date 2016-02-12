@@ -168,7 +168,7 @@ make_dirs "$wdir";
 
 
 # Check previous results, in order to avoid re-doing work.
-pending_feas=();
+pending_tasks=();
 for i in $(seq 1 ${#feas[@]}); do
     olattice="$wdir/lattice.$i.ark";
     owords="$wdir/words.$i.ark";
@@ -179,24 +179,26 @@ for i in $(seq 1 ${#feas[@]}); do
         ( "$write_best_words" = false || -s "$owords" || -s "$owords.gz" ) && \
         ( "$write_best_align" = false || -s "$oalign" || -s "$oalign.gz" ) ]] && \
         grep -s "Overall log-likelihood" "$log" &> /dev/null && continue;
-    pending_feas+=("$i");
+    pending_tasks+=("$i");
     # Remove previous temporal results.
     rm -f "$olattice"{,.gz} "$owords"{,.gz} "$oalign"{,.gz};
 done;
-if [ ${#pending_feas[@]} -eq 0 ]; then
+if [ ${#pending_tasks[@]} -eq 0 ]; then
     # No pending features to process. Exit normally.
+    msg "Avoiding lattice re-generation: found all lattices in \"$wdir\"";
     exit 0;
 else
     # SGE only admits continuous ranges, so relaunch all tasks between the
     # first pending and the latest. Notice that later, some code is added to the
     # tasks' script so that completed tasks do not re-do the job again.
-    qsub_tasks="${pending_feas[0]}-${pending_feas[@]:(-1)}";
+    qsub_tasks="${pending_tasks[0]}-${pending_tasks[@]:(-1)}";
 fi;
 
 if [ "$qsub" = true ]; then
     check_execs qsub;
     # Launch a different task for each input feature specifier. This will print
     # the list of job IDs in each line.
+    qsub_script="$(mktemp)";
     { cat <<EOF
 #!/bin/bash
 #$ -cwd
@@ -205,7 +207,7 @@ if [ "$qsub" = true ]; then
 #$ ${qsub_opts}
 set -e;
 EOF
-    for i in "${pending_feas[@]}"; do
+    for i in "${pending_tasks[@]}"; do
         olattice="$wdir/lattice.$i.ark";
         owords="$wdir/words.$i.ark";
         oalign="$wdir/align.$i.ark";
@@ -250,12 +252,15 @@ EOF
         echo "\$(date "+%F %T") [${0##*/}:${LINENO}] ERROR: gmm-latgen-faster-parallel failed, see log file \"$log\"" >&2;
         exit 1;
     }
+}
 EOF
-    done } | qsub -terse | tail -n1 || error "qsub job submission failed!";
+    done } > "$qsub_script" || exit 1;
+    qsub -terse "$qsub_script" | tail -n1 | sed 's/\..*$//g' || \
+        error "qsub job submission failed!";
 else
     # Process all input features sequentially, since each
     # gmm-latgen-faster-parallel already uses multiple threads...
-    for i in "${pending_feas[@]}"; do
+    for i in "${pending_tasks[@]}"; do
         olattice="$wdir/lattice.$i.ark";
         owords="$wdir/words.$i.ark";
         oalign="$wdir/align.$i.ark";

@@ -145,6 +145,7 @@ if [ "$qsub" = true ]; then
     check_execs qsub;
     # Launch a different task for each input feature specifier. This will print
     # the list of job IDs in each line.
+    qsub_script="$(mktemp)";
     { cat <<EOF
 #!/bin/bash
 #$ -cwd
@@ -184,7 +185,9 @@ EOF
         exit 1;
     }
 EOF
-    done } | qsub -terse | tail -n1 || error "qsub job submission failed!";
+    done } > "$qsub_script" || exit 1;
+    qsub -terse "$qsub_script" | tail -n1 | sed 's/\..*$//g' || \
+        error "qsub job submission failed!";
 else
     bg_jobs=();
     for i in "${pending_feas[@]}"; do
